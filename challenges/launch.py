@@ -102,7 +102,7 @@ class Runner:
         self.run_agent(args)
 
     def claude_args(self, instruction: str):
-        if shutil.which("claude") is None:
+        if not self.skip_agent and shutil.which("claude") is None:
             raise SystemExit("required tool not on PATH: claude")
         args = ["claude", "--print"]
         args.extend(["--model", self.model or "claude-opus-4-7", "--effort", "xhigh"])
@@ -116,7 +116,7 @@ class Runner:
         return args
 
     def codex_args(self, instruction: str):
-        if shutil.which("codex") is None:
+        if not self.skip_agent and shutil.which("codex") is None:
             raise SystemExit("required tool not on PATH: codex")
         last_message = Path(self.workspace, "artifacts", "codex-last-message.txt")
         args = ["codex", "exec", "--json"]
