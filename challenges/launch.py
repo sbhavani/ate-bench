@@ -297,6 +297,7 @@ class Runner:
                     'prefix_rule(pattern=["python3.12"], decision="allow")',
                     'prefix_rule(pattern=["realpath"], decision="allow")',
                     'prefix_rule(pattern=["rm"], decision="allow")',
+                    'prefix_rule(pattern=["rmdir"], decision="allow")',
                     'prefix_rule(pattern=["rg"], decision="allow")',
                     'prefix_rule(pattern=["sed"], decision="allow")',
                     'prefix_rule(pattern=["tail"], decision="allow")',
