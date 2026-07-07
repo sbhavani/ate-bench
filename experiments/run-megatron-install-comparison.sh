@@ -9,6 +9,7 @@ MODEL=
 OVERLAY_ROOT=
 AGENT_CONTAINER_IMAGE=
 AGENT_CONTAINER_USER=
+AGENT_CONTAINER_PRIVILEGED=0
 COMMON_INSTRUCTION_PREFIX_FILE=
 TORCH_BACKEND=
 NVTE_CUDA_ARCHS=
@@ -37,6 +38,8 @@ options:
                         Run the agent inside this Docker image
   --agent-container-user USER
                         User passed to Docker for the agent container
+  --agent-container-privileged
+                        Pass Docker --privileged to the agent container
   --common-instruction-prefix-file PATH
                         Prepend shared benchmark instructions to both attempts
   --torch-backend NAME  Override ATE_TORCH_BACKEND for CUDA host compatibility
@@ -79,6 +82,10 @@ while [[ $# -gt 0 ]]; do
         --agent-container-user)
             AGENT_CONTAINER_USER=$2
             shift 2
+            ;;
+        --agent-container-privileged)
+            AGENT_CONTAINER_PRIVILEGED=1
+            shift
             ;;
         --common-instruction-prefix-file)
             COMMON_INSTRUCTION_PREFIX_FILE=$2
@@ -168,6 +175,9 @@ if [[ -n "$AGENT_CONTAINER_IMAGE" ]]; then
 fi
 if [[ -n "$AGENT_CONTAINER_USER" ]]; then
     COMMON_ARGS+=(--agent-container-user "$AGENT_CONTAINER_USER")
+fi
+if [[ "$AGENT_CONTAINER_PRIVILEGED" -eq 1 ]]; then
+    COMMON_ARGS+=(--agent-container-privileged)
 fi
 if [[ -n "$COMMON_INSTRUCTION_PREFIX_FILE" ]]; then
     COMMON_ARGS+=(--instruction-prefix-file "$COMMON_INSTRUCTION_PREFIX_FILE")

@@ -45,6 +45,7 @@ class Runner:
         codex_sandbox: str,
         agent_container_image: str | None,
         agent_container_user: str | None,
+        agent_container_privileged: bool,
         success_artifact: str | None,
         success_artifact_contains: str | None,
         stop_after_success_artifact: bool,
@@ -59,6 +60,7 @@ class Runner:
         self.codex_sandbox = codex_sandbox
         self.agent_container_image = agent_container_image
         self.agent_container_user = agent_container_user
+        self.agent_container_privileged = agent_container_privileged
         self.success_artifact = success_artifact
         self.success_artifact_contains = success_artifact_contains
         self.stop_after_success_artifact = stop_after_success_artifact
@@ -181,6 +183,7 @@ class Runner:
             "codex_sandbox": self.codex_sandbox,
             "agent_container_image": self.agent_container_image,
             "agent_container_user": self.agent_container_user,
+            "agent_container_privileged": self.agent_container_privileged,
             "success_artifact": self.success_artifact,
             "success_artifact_contains": self.success_artifact_contains,
             "stop_after_success_artifact": self.stop_after_success_artifact,
@@ -262,6 +265,10 @@ class Runner:
                 [
                     'prefix_rule(pattern=["/usr/bin/bash", "-c"], decision="allow")',
                     'prefix_rule(pattern=["/usr/bin/bash", "-lc"], decision="allow")',
+                    'prefix_rule(pattern=["/bin/bash", "-c"], decision="allow")',
+                    'prefix_rule(pattern=["/bin/bash", "-lc"], decision="allow")',
+                    'prefix_rule(pattern=["bash", "-c"], decision="allow")',
+                    'prefix_rule(pattern=["bash", "-lc"], decision="allow")',
                     "",
                 ]
             )
@@ -294,6 +301,8 @@ class Runner:
             "-e",
             "PATH=%s" % os.environ.get("PATH", ""),
         ]
+        if self.agent_container_privileged:
+            args.append("--privileged")
         if self.agent_container_user:
             args.extend(["--user", self.agent_container_user])
         for name in env_names:
@@ -746,6 +755,11 @@ if __name__ == "__main__":
         help="User passed to Docker for the agent container; use `root` if nested sandbox namespaces fail.",
     )
     p.add_argument(
+        "--agent-container-privileged",
+        action="store_true",
+        help="Run the agent container with Docker --privileged when nested sandbox namespaces require it.",
+    )
+    p.add_argument(
         "--codex-sandbox",
         type=str,
         choices=["read-only", "workspace-write", "danger-full-access"],
@@ -799,6 +813,7 @@ if __name__ == "__main__":
         a.codex_sandbox,
         a.agent_container_image,
         a.agent_container_user,
+        a.agent_container_privileged,
         a.success_artifact,
         a.success_artifact_contains,
         a.stop_after_success_artifact,
