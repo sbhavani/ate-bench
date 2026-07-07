@@ -10,6 +10,7 @@ OVERLAY_ROOT=
 TORCH_BACKEND=
 NVTE_CUDA_ARCHS=
 TORCH_CUDA_ARCH_LIST=
+INSTALL_APEX=0
 SKIP_AGENT=0
 KEEP_WORKSPACE=0
 
@@ -29,6 +30,7 @@ options:
   --torch-backend NAME  Override ATE_TORCH_BACKEND for CUDA host compatibility
   --nvte-cuda-archs X   Override ATE_NVTE_CUDA_ARCHS, e.g. 90
   --torch-cuda-arch X   Override ATE_TORCH_CUDA_ARCH_LIST, e.g. 9.0
+  --install-apex        Install Apex during prepare; skipped by default
   --skip-agent          Prepare/capture only; useful for harness validation
   --keep-workspace      Keep prepared workspace directories
   -h, --help            Show this help
@@ -64,6 +66,10 @@ while [[ $# -gt 0 ]]; do
         --torch-cuda-arch)
             TORCH_CUDA_ARCH_LIST=$2
             shift 2
+            ;;
+        --install-apex)
+            INSTALL_APEX=1
+            shift
             ;;
         --skip-agent)
             SKIP_AGENT=1
@@ -110,6 +116,7 @@ fi
 if [[ -n "$TORCH_CUDA_ARCH_LIST" ]]; then
     export ATE_TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
 fi
+export ATE_INSTALL_APEX=$INSTALL_APEX
 
 COMMON_ARGS=(Megatron-LM "$CHALLENGE" --agent "$AGENT")
 if [[ -n "$MODEL" ]]; then

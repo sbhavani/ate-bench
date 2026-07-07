@@ -56,7 +56,10 @@ generated agent command without spending on a full agent attempt.
 
 For the Megatron-LM bare-metal install comparison, the paired helper runs the
 same challenge once without skills and once with the Megatron install-skill
-overlay:
+overlay. The helper skips Apex during prepare by default because the prepare
+venv is discarded before the agent runs and the Megatron Core/TE challenge path
+does not need Apex; pass `--install-apex` only when intentionally testing that
+legacy dependency path.
 
 ```bash
 experiments/run-megatron-install-comparison.sh \

@@ -40,7 +40,9 @@ build_environment()
     export CPATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","include"))))')${CPATH:+:$CPATH}"
     export LIBRARY_PATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","lib"))))')${LIBRARY_PATH:+:$LIBRARY_PATH}"
     uv sync --extra dev --extra mlm --no-group test --no-install-package nvidia-resiliency-ext --inexact
-    uv pip install --python .venv/bin/python --no-config --no-build-isolation -C="--build-option=--cpp_ext" -C="--build-option=--cuda_ext" "apex @ git+https://github.com/NVIDIA/apex.git"
+    if [[ "${ATE_INSTALL_APEX:-0}" == "1" ]]; then
+        uv pip install --python .venv/bin/python --no-config --no-build-isolation -C="--build-option=--cpp_ext" -C="--build-option=--cuda_ext" "apex @ git+https://github.com/NVIDIA/apex.git"
+    fi
     uv pip install --python .venv/bin/python --no-config accelerate omegaconf hydra-core datasets tensorboard rich six
     popd
 
