@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Run paired Codex attempts for the Megatron-LM getting-started install task.
+# Run paired Codex attempts for the Megatron-LM install-only task.
 
 set -euo pipefail
 
-CHALLENGE=challenges/operate-and-profile/getting-started
+CHALLENGE=challenges/operate-and-profile/install-only
 AGENT=codex
 MODEL=
 OVERLAY_ROOT=
@@ -13,6 +13,8 @@ TORCH_CUDA_ARCH_LIST=
 INSTALL_APEX=0
 SKIP_AGENT=0
 KEEP_WORKSPACE=0
+CODEX_BYPASS_APPROVALS=1
+STOP_AFTER_SUCCESS_ARTIFACT=1
 
 usage() {
     cat <<'EOF'
@@ -24,13 +26,17 @@ Runs two ATE-Bench attempts:
 
 options:
   --overlay-root PATH   Megatron-LM checkout containing the install skill changes
-  --challenge PATH      Challenge directory (default: operate-and-profile/getting-started)
+  --challenge PATH      Challenge directory (default: operate-and-profile/install-only)
   --agent NAME          Agent backend (default: codex)
   --model NAME          Agent model override
   --torch-backend NAME  Override ATE_TORCH_BACKEND for CUDA host compatibility
   --nvte-cuda-archs X   Override ATE_NVTE_CUDA_ARCHS, e.g. 90
   --torch-cuda-arch X   Override ATE_TORCH_CUDA_ARCH_LIST, e.g. 9.0
   --install-apex        Install Apex during prepare; skipped by default
+  --no-codex-bypass-approvals
+                        Do not pass Codex's bypass flag; useful for managed accounts
+  --no-stop-after-success-artifact
+                        Let the agent final-answer instead of stopping once smoke passes
   --skip-agent          Prepare/capture only; useful for harness validation
   --keep-workspace      Keep prepared workspace directories
   -h, --help            Show this help
@@ -69,6 +75,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --install-apex)
             INSTALL_APEX=1
+            shift
+            ;;
+        --no-codex-bypass-approvals)
+            CODEX_BYPASS_APPROVALS=0
+            shift
+            ;;
+        --no-stop-after-success-artifact)
+            STOP_AFTER_SUCCESS_ARTIFACT=0
             shift
             ;;
         --skip-agent)
@@ -122,6 +136,16 @@ COMMON_ARGS=(Megatron-LM "$CHALLENGE" --agent "$AGENT")
 if [[ -n "$MODEL" ]]; then
     COMMON_ARGS+=(--model "$MODEL")
 fi
+if [[ "$AGENT" == "codex" && "$CODEX_BYPASS_APPROVALS" -eq 0 ]]; then
+    COMMON_ARGS+=(--no-codex-bypass-approvals)
+fi
+COMMON_ARGS+=(
+    --success-artifact artifacts/install-smoke.log
+    --success-artifact-contains "install smoke: ok"
+)
+if [[ "$STOP_AFTER_SUCCESS_ARTIFACT" -eq 1 ]]; then
+    COMMON_ARGS+=(--stop-after-success-artifact)
+fi
 if [[ "$SKIP_AGENT" -eq 1 ]]; then
     COMMON_ARGS+=(--skip-agent)
 fi
@@ -143,6 +167,6 @@ python3 challenges/launch.py "${COMMON_ARGS[@]}" \
     --instruction-prefix-file experiments/megatron-install-skill-prefix.md
 
 SNAPSHOT_ROOT=snapshots/$CHALLENGE
-if [[ "$AGENT" == "codex" && -d "$SNAPSHOT_ROOT" ]]; then
-    python3 experiments/summarize_codex_events.py "$SNAPSHOT_ROOT"
+if [[ "$AGENT" == "codex" ]]; then
+    python3 experiments/summarize_codex_events.py "workspace/$CHALLENGE" "$SNAPSHOT_ROOT"
 fi

@@ -2,11 +2,14 @@ import argparse
 import json
 import os
 import re
+import select
 import secrets
 import shlex
 import shutil
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 WORKSPACE = Path("workspace").resolve()
@@ -38,6 +41,10 @@ class Runner:
         overlays: list[str],
         instruction_prefix_file: str | None,
         run_label: str | None,
+        codex_bypass_approvals: bool,
+        success_artifact: str | None,
+        success_artifact_contains: str | None,
+        stop_after_success_artifact: bool,
         skip_agent: bool,
         keep_workspace: bool,
     ):
@@ -45,6 +52,10 @@ class Runner:
         self.overlays = overlays
         self.instruction_prefix_file = instruction_prefix_file
         self.run_label = self.sanitize_run_label(run_label)
+        self.codex_bypass_approvals = codex_bypass_approvals
+        self.success_artifact = success_artifact
+        self.success_artifact_contains = success_artifact_contains
+        self.stop_after_success_artifact = stop_after_success_artifact
         self.skip_agent = skip_agent
         self.keep_workspace = keep_workspace
         uuid_parts = [framework]
@@ -54,13 +65,49 @@ class Runner:
         self.uuid = "-".join(uuid_parts)
         self.workspace = Path(WORKSPACE, challenge, self.uuid)
         self.workspace.mkdir(parents=True, exist_ok=False)
+        self.launch_started_monotonic = time.monotonic()
+        self.launch_started_epoch = time.time()
+        self.launch_started_at = self.utc_now()
+
+    @staticmethod
+    def utc_now() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def iso_from_epoch(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+    def write_run_metrics(self, updates: dict):
+        metrics = {}
+        metrics_path = Path(self.workspace, "artifacts", "run-metrics.json")
+        if metrics_path.exists():
+            try:
+                metrics = json.loads(metrics_path.read_text())
+            except json.JSONDecodeError:
+                metrics = {}
+        metrics.update(updates)
+        metrics["updated_at"] = self.utc_now()
+        metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
 
     def prepare(self):
         # Materialize the workspace: the per-challenge script clones, patches, and builds the framework.
         Path(self.workspace, "artifacts").mkdir()
+        prepare_started = time.monotonic()
+        self.write_run_metrics(
+            {
+                "launch_started_at": self.launch_started_at,
+                "prepare_started_at": self.utc_now(),
+            }
+        )
         prepare = Path(self.challenge, "prepare", "%s.sh" % self.framework).as_posix()
         subprocess.run(["bash", prepare, self.workspace.as_posix()], check=True)
         self.apply_overlays()
+        self.write_run_metrics(
+            {
+                "prepare_finished_at": self.utc_now(),
+                "prepare_elapsed_sec": round(time.monotonic() - prepare_started, 3),
+            }
+        )
 
     def apply_overlays(self):
         for overlay in self.overlays:
@@ -101,6 +148,14 @@ class Runner:
 
     def attempt(self):
         # Run the agent in the workspace; stream its JSON events to stdout for progress.
+        attempt_started_monotonic = time.monotonic()
+        attempt_started_epoch = time.time()
+        self.write_run_metrics(
+            {
+                "attempt_started_at": self.utc_now(),
+                "agent": self.agent,
+            }
+        )
         instruction = Path(self.challenge, "instruction.md").read_text()
         instruction = instruction.format(framework=self.framework)
         if self.instruction_prefix_file:
@@ -114,6 +169,10 @@ class Runner:
             "run_label": self.run_label,
             "overlays": self.overlays,
             "instruction_prefix_file": self.instruction_prefix_file,
+            "codex_bypass_approvals": self.codex_bypass_approvals,
+            "success_artifact": self.success_artifact,
+            "success_artifact_contains": self.success_artifact_contains,
+            "stop_after_success_artifact": self.stop_after_success_artifact,
             "workspace": self.workspace.as_posix(),
         }
         Path(self.workspace, "artifacts", "run-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -126,8 +185,23 @@ class Runner:
             raise ValueError("unsupported agent: %s" % self.agent)
         if self.skip_agent:
             self.write_agent_command(args)
+            self.write_run_metrics(
+                {
+                    "attempt_finished_at": self.utc_now(),
+                    "attempt_elapsed_sec": round(time.monotonic() - attempt_started_monotonic, 3),
+                    "agent_skipped": True,
+                }
+            )
             return
-        self.run_agent(args)
+        try:
+            self.run_agent(args, attempt_started_monotonic, attempt_started_epoch)
+        finally:
+            self.write_run_metrics(
+                {
+                    "attempt_finished_at": self.utc_now(),
+                    "attempt_elapsed_sec": round(time.monotonic() - attempt_started_monotonic, 3),
+                }
+            )
 
     def claude_args(self, instruction: str):
         if not self.skip_agent and shutil.which("claude") is None:
@@ -154,25 +228,135 @@ class Runner:
             args.extend(["--model", self.model])
         # ATE-Bench workspaces are disposable sandboxes. Match Claude Code's
         # permission-skipping behavior so environment setup and profiling tasks
-        # can run without interactive approval prompts.
-        args.append("--dangerously-bypass-approvals-and-sandbox")
+        # can run without interactive approval prompts. Managed enterprise
+        # Codex policies may disallow this flag; callers can opt out and rely
+        # on normal workspace-write plus local trust rules instead.
+        if self.codex_bypass_approvals:
+            args.append("--dangerously-bypass-approvals-and-sandbox")
         args.append(instruction)
         return args
 
-    def run_agent(self, args):
+    def run_agent(self, args, attempt_started_monotonic: float, attempt_started_epoch: float):
         events = Path(self.workspace, "artifacts", "%s-events.jsonl" % self.agent)
         self.write_agent_command(args)
+        agent_started_monotonic = time.monotonic()
+        agent_started_epoch = time.time()
+        self.write_run_metrics(
+            {
+                "agent_started_at": self.utc_now(),
+            }
+        )
         with events.open("wb") as log:
             proc = subprocess.Popen(args, cwd=self.workspace, stdout=subprocess.PIPE)
             assert proc.stdout is not None
-            for line in proc.stdout:
-                sys.stdout.buffer.write(line)
-                sys.stdout.buffer.flush()
-                log.write(line)
-                log.flush()
+            stopped_after_success = False
+            success_metric_written = False
+            while True:
+                ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+                if ready:
+                    line = proc.stdout.readline()
+                    if line:
+                        sys.stdout.buffer.write(line)
+                        sys.stdout.buffer.flush()
+                        log.write(line)
+                        log.flush()
+                    elif proc.poll() is not None:
+                        break
+                elif proc.poll() is not None:
+                    break
+
+                success_metrics = self.success_artifact_metrics(
+                    attempt_started_epoch, agent_started_epoch
+                )
+                if success_metrics.get("ready") and not success_metric_written:
+                    self.write_run_metrics(
+                        {
+                            "success_artifact": success_metrics,
+                            "install_smoke": self.install_smoke_metrics(
+                                attempt_started_epoch, agent_started_epoch
+                            ),
+                        }
+                    )
+                    success_metric_written = True
+                if self.stop_after_success_artifact and success_metrics.get("ready"):
+                    stopped_after_success = True
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                    break
             returncode = proc.wait()
-        if returncode:
+        self.write_run_metrics(
+            {
+                "agent_finished_at": self.utc_now(),
+                "agent_elapsed_sec": round(time.monotonic() - agent_started_monotonic, 3),
+                "attempt_elapsed_sec": round(time.monotonic() - attempt_started_monotonic, 3),
+                "agent_returncode": returncode,
+                "stopped_after_success_artifact": stopped_after_success,
+                "success_artifact": self.success_artifact_metrics(
+                    attempt_started_epoch, agent_started_epoch
+                ),
+                "install_smoke": self.install_smoke_metrics(attempt_started_epoch, agent_started_epoch),
+            }
+        )
+        if returncode and not stopped_after_success:
             raise subprocess.CalledProcessError(returncode, args)
+
+    def install_smoke_metrics(self, attempt_started_epoch: float, agent_started_epoch: float | None = None):
+        smoke = Path(self.workspace, "artifacts", "install-smoke.log")
+        if not smoke.exists():
+            return {"exists": False}
+        try:
+            text = smoke.read_text(errors="replace")
+        except OSError:
+            text = ""
+        mtime = smoke.stat().st_mtime
+        metrics = {
+            "exists": True,
+            "path": "artifacts/install-smoke.log",
+            "mtime_at": self.iso_from_epoch(mtime),
+            "since_attempt_start_sec": round(max(0.0, mtime - attempt_started_epoch), 3),
+            "contains_install_smoke_ok": "install smoke: ok" in text,
+        }
+        if agent_started_epoch is not None:
+            metrics["since_agent_start_sec"] = round(max(0.0, mtime - agent_started_epoch), 3)
+        return metrics
+
+    def success_artifact_metrics(
+        self, attempt_started_epoch: float, agent_started_epoch: float | None = None
+    ):
+        if not self.success_artifact:
+            return {"configured": False, "ready": False}
+        artifact = Path(self.workspace, self.success_artifact)
+        metrics = {
+            "configured": True,
+            "ready": False,
+            "exists": artifact.exists(),
+            "path": self.success_artifact,
+        }
+        if not artifact.exists():
+            return metrics
+        try:
+            text = artifact.read_text(errors="replace")
+        except OSError:
+            text = ""
+        mtime = artifact.stat().st_mtime
+        contains = True
+        if self.success_artifact_contains:
+            contains = self.success_artifact_contains in text
+        metrics.update(
+            {
+                "ready": contains,
+                "contains_expected_text": contains,
+                "mtime_at": self.iso_from_epoch(mtime),
+                "since_attempt_start_sec": round(max(0.0, mtime - attempt_started_epoch), 3),
+            }
+        )
+        if agent_started_epoch is not None:
+            metrics["since_agent_start_sec"] = round(max(0.0, mtime - agent_started_epoch), 3)
+        return metrics
 
     def write_agent_command(self, args):
         command = Path(self.workspace, "artifacts", "%s-command.txt" % self.agent)
@@ -210,6 +394,12 @@ class Runner:
         try:
             self.attempt()
         finally:
+            self.write_run_metrics(
+                {
+                    "benchmark_finished_at": self.utc_now(),
+                    "benchmark_elapsed_sec": round(time.monotonic() - self.launch_started_monotonic, 3),
+                }
+            )
             # If the attempt failed, we still capture. If the capture failed, we never cleanup.
             # This allows manual inspection over failures at different points of the execution.
             self.capture()
@@ -222,6 +412,30 @@ if __name__ == "__main__":
     p.add_argument("challenge", type=lambda s: s if Path(s).is_dir() else p.error("%s is not a valid task" % s))
     p.add_argument("--agent", type=str, choices=["claude", "codex"], default="claude")
     p.add_argument("--model", type=str, default=None, help="Agent model override")
+    p.add_argument(
+        "--codex-bypass-approvals",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("ATE_CODEX_BYPASS_APPROVALS", "1").lower()
+        not in {"0", "false", "no"},
+        help="Use Codex's approval/sandbox bypass flag for disposable ATE workspaces.",
+    )
+    p.add_argument(
+        "--success-artifact",
+        type=str,
+        default=None,
+        help="Relative workspace path whose creation marks task success for timing metrics.",
+    )
+    p.add_argument(
+        "--success-artifact-contains",
+        type=str,
+        default=None,
+        help="Optional text that must appear in --success-artifact before it is considered ready.",
+    )
+    p.add_argument(
+        "--stop-after-success-artifact",
+        action="store_true",
+        help="Terminate the agent after the success artifact is ready, then capture artifacts.",
+    )
     p.add_argument(
         "--overlay",
         action="append",
@@ -247,6 +461,10 @@ if __name__ == "__main__":
         a.overlay,
         a.instruction_prefix_file,
         a.run_label,
+        a.codex_bypass_approvals,
+        a.success_artifact,
+        a.success_artifact_contains,
+        a.stop_after_success_artifact,
         a.skip_agent,
         a.keep_workspace,
     ).launch()

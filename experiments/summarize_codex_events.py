@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,42 @@ def text_field(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+def numeric_field(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def snake_case(value: str) -> str:
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    return re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").lower()
+
+
+def token_usage_total(token_usage: dict[str, int]) -> int | None:
+    for key in ("total_tokens", "tokens_total"):
+        if key in token_usage:
+            return token_usage[key]
+    if "prompt_tokens" in token_usage and "completion_tokens" in token_usage:
+        return token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+    if "input_tokens" in token_usage and "output_tokens" in token_usage:
+        return token_usage["input_tokens"] + token_usage["output_tokens"]
+    return None
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def is_tool_like(mapping: dict[str, Any]) -> bool:
     fields = " ".join(
         text_field(mapping.get(key)).lower()
@@ -59,6 +96,8 @@ def summarize(path: Path) -> dict[str, Any]:
     lines = 0
     invalid_lines = 0
     last_error = ""
+    token_usage_max: dict[str, int] = {}
+    token_usage_observations = 0
 
     with path.open() as f:
         for raw in f:
@@ -77,6 +116,15 @@ def summarize(path: Path) -> dict[str, Any]:
 
             seen_tool_payloads: set[int] = set()
             for mapping in walk_dicts(event):
+                for key, value in mapping.items():
+                    token_count = numeric_field(value)
+                    normalized_key = snake_case(str(key))
+                    if token_count is None or "token" not in normalized_key:
+                        continue
+                    token_usage_observations += 1
+                    token_usage_max[normalized_key] = max(
+                        token_count, token_usage_max.get(normalized_key, 0)
+                    )
                 if not is_tool_like(mapping):
                     continue
                 marker = id(mapping)
@@ -100,13 +148,25 @@ def summarize(path: Path) -> dict[str, Any]:
     elif event_types["turn.started"]:
         status = "started"
 
-    metadata = {}
-    metadata_path = path.parent / "run-metadata.json"
-    if metadata_path.exists():
-        try:
-            metadata = json.loads(metadata_path.read_text())
-        except json.JSONDecodeError:
-            metadata = {}
+    metadata = load_json(path.parent / "run-metadata.json")
+    metrics = load_json(path.parent / "run-metrics.json")
+    install_smoke = metrics.get("install_smoke") if isinstance(metrics.get("install_smoke"), dict) else {}
+    success_artifact = (
+        metrics.get("success_artifact") if isinstance(metrics.get("success_artifact"), dict) else {}
+    )
+    if (
+        status == "started"
+        and metrics.get("stopped_after_success_artifact")
+        and success_artifact.get("ready")
+    ):
+        status = "completed"
+
+    smoke_elapsed_sec = install_smoke.get("since_agent_start_sec") or install_smoke.get(
+        "since_attempt_start_sec"
+    )
+    success_elapsed_sec = success_artifact.get("since_agent_start_sec") or success_artifact.get(
+        "since_attempt_start_sec"
+    )
 
     return {
         "path": path.as_posix(),
@@ -124,7 +184,24 @@ def summarize(path: Path) -> dict[str, Any]:
         "top_tool_like_names": tool_names.most_common(8),
         "event_types": dict(event_types),
         "last_error": last_error,
+        "token_usage_max": token_usage_max,
+        "token_usage_observations": token_usage_observations,
+        "token_usage_total": token_usage_total(token_usage_max),
+        "agent_elapsed_sec": metrics.get("agent_elapsed_sec"),
+        "attempt_elapsed_sec": metrics.get("attempt_elapsed_sec"),
+        "benchmark_elapsed_sec": metrics.get("benchmark_elapsed_sec"),
+        "smoke_elapsed_sec": smoke_elapsed_sec,
+        "success_elapsed_sec": success_elapsed_sec,
+        "stopped_after_success_artifact": bool(metrics.get("stopped_after_success_artifact")),
+        "install_smoke": install_smoke,
+        "success_artifact": success_artifact,
     }
+
+
+def format_seconds(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:.1f}"
+    return "-"
 
 
 def print_text(rows: list[dict[str, Any]]) -> None:
@@ -139,6 +216,9 @@ def print_text(rows: list[dict[str, Any]]) -> None:
         "tool_like",
         "errors",
         "events",
+        "agent_s",
+        "success_s",
+        "tokens",
         "path",
     ]
     print("\t".join(headers))
@@ -152,12 +232,20 @@ def print_text(rows: list[dict[str, Any]]) -> None:
                     str(row["tool_like_events"]),
                     str(row["errors"] + row["turns_failed"]),
                     str(row["lines"]),
+                    format_seconds(row.get("agent_elapsed_sec")),
+                    format_seconds(row.get("success_elapsed_sec") or row.get("smoke_elapsed_sec")),
+                    text_field(row.get("token_usage_total") or "-"),
                     row["path"],
                 ]
             )
         )
+        if row.get("stopped_after_success_artifact"):
+            print("  stopped_after_success_artifact: true")
         if row["last_error"]:
             print(f"  last_error: {row['last_error'][:400]}")
+        if row.get("token_usage_max") and row.get("token_usage_total") is None:
+            token_keys = ", ".join(f"{name}={count}" for name, count in row["token_usage_max"].items())
+            print(f"  token_usage_max: {token_keys}")
         if row["top_tool_like_names"]:
             tools = ", ".join(f"{name}={count}" for name, count in row["top_tool_like_names"])
             print(f"  tool_like_names: {tools}")
