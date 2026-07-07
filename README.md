@@ -39,6 +39,21 @@ Use `--model <name>` to override the default model for the selected agent.
 Agent JSON events are teed into `artifacts/<agent>-events.jsonl` and copied into
 the final snapshot.
 
+For skill/no-skill experiments, use overlays and an instruction prefix. For
+example, to inject Megatron-LM's repository guidance and skills into a prepared
+workspace before the agent runs:
+
+```bash
+python3 challenges/launch.py Megatron-LM challenges/operate-and-profile/getting-started \
+  --agent codex \
+  --overlay /path/to/Megatron-LM/AGENTS.md:Megatron-LM/AGENTS.md \
+  --overlay /path/to/Megatron-LM/skills:Megatron-LM/skills \
+  --instruction-prefix-file experiments/megatron-install-skill-prefix.md
+```
+
+Use `--skip-agent --keep-workspace` to validate preparation, overlays, and the
+generated agent command without spending on a full agent attempt.
+
 Each run clones the framework at its pinned commit into a throwaway sandbox under `workspace/`, runs the agent, and writes the record (patches, artifacts, session transcript) to `snapshots/<challenge>/<uuid>/`. The challenge categories under `challenges/` are `question-and-answer/` (read-only codebase Q&A), `operate-and-profile/` (run, instrument, and profile a workflow), and `new-features/` (integrate a new architecture).
 
 We recommend pointing `workspace/` at a locally-mounted disk rather than NFS. For full isolation, every task installs its own environment and clones the framework from scratch, so this directory takes heavy, repeated I/O — and local disks are much faster than NFS for it. Only the small, permanent records under `snapshots/` need to live on shared storage. You may additionally set `ANTHROPIC_API_KEY` to authenticate the agent.

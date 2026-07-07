@@ -27,8 +27,22 @@ for tool in ("uv",):
 
 class Runner:
 
-    def __init__(self, framework: str, challenge: str, agent: str, model: str | None):
+    def __init__(
+        self,
+        framework: str,
+        challenge: str,
+        agent: str,
+        model: str | None,
+        overlays: list[str],
+        instruction_prefix_file: str | None,
+        skip_agent: bool,
+        keep_workspace: bool,
+    ):
         self.framework, self.challenge, self.agent, self.model = framework, challenge, agent, model
+        self.overlays = overlays
+        self.instruction_prefix_file = instruction_prefix_file
+        self.skip_agent = skip_agent
+        self.keep_workspace = keep_workspace
         self.uuid = "-".join([framework, secrets.token_hex(3)])
         self.workspace = Path(WORKSPACE, challenge, self.uuid)
         self.workspace.mkdir(parents=True, exist_ok=False)
@@ -38,17 +52,53 @@ class Runner:
         Path(self.workspace, "artifacts").mkdir()
         prepare = Path(self.challenge, "prepare", "%s.sh" % self.framework).as_posix()
         subprocess.run(["bash", prepare, self.workspace.as_posix()], check=True)
+        self.apply_overlays()
+
+    def apply_overlays(self):
+        for overlay in self.overlays:
+            source, destination = self.parse_overlay(overlay)
+            if not source.exists():
+                raise FileNotFoundError("overlay source not found: %s" % source)
+            target = Path(self.workspace, destination)
+            if source.is_dir():
+                shutil.copytree(source, target, dirs_exist_ok=True, ignore=self.overlay_ignore)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+
+    @staticmethod
+    def parse_overlay(overlay: str):
+        if ":" not in overlay:
+            raise ValueError("overlay must use SOURCE:DESTINATION syntax: %s" % overlay)
+        source, destination = overlay.split(":", 1)
+        if not source or not destination:
+            raise ValueError("overlay must use SOURCE:DESTINATION syntax: %s" % overlay)
+        return Path(source).expanduser().resolve(), destination
+
+    @staticmethod
+    def overlay_ignore(directory, names):
+        ignored = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+        if Path(directory).name == "Megatron-LM":
+            ignored.update({"outputs", "workspace", "snapshots"})
+        return ignored.intersection(names)
 
     def attempt(self):
         # Run the agent in the workspace; stream its JSON events to stdout for progress.
         instruction = Path(self.challenge, "instruction.md").read_text()
         instruction = instruction.format(framework=self.framework)
+        if self.instruction_prefix_file:
+            prefix = Path(self.instruction_prefix_file).read_text()
+            instruction = prefix.rstrip() + "\n\n" + instruction
+        Path(self.workspace, "artifacts", "%s-instruction.md" % self.agent).write_text(instruction)
         if self.agent == "claude":
             args = self.claude_args(instruction)
         elif self.agent == "codex":
             args = self.codex_args(instruction)
         else:
             raise ValueError("unsupported agent: %s" % self.agent)
+        if self.skip_agent:
+            self.write_agent_command(args)
+            return
         self.run_agent(args)
 
     def claude_args(self, instruction: str):
@@ -83,8 +133,7 @@ class Runner:
 
     def run_agent(self, args):
         events = Path(self.workspace, "artifacts", "%s-events.jsonl" % self.agent)
-        command = Path(self.workspace, "artifacts", "%s-command.txt" % self.agent)
-        command.write_text(" ".join(shlex.quote(str(arg)) for arg in args) + "\n")
+        self.write_agent_command(args)
         with events.open("wb") as log:
             proc = subprocess.Popen(args, cwd=self.workspace, stdout=subprocess.PIPE)
             assert proc.stdout is not None
@@ -96,6 +145,10 @@ class Runner:
             returncode = proc.wait()
         if returncode:
             raise subprocess.CalledProcessError(returncode, args)
+
+    def write_agent_command(self, args):
+        command = Path(self.workspace, "artifacts", "%s-command.txt" % self.agent)
+        command.write_text(" ".join(shlex.quote(str(arg)) for arg in args) + "\n")
 
     def capture(self):
         snapshot = Path("snapshots", self.challenge, self.uuid)
@@ -118,6 +171,8 @@ class Runner:
 
     def cleanup(self):
         # Remove the workspace and any claude code session.
+        if self.keep_workspace:
+            return
         project = Path(Path.home(), ".claude/projects", self.workspace.as_posix().replace("/", "-"))
         shutil.rmtree(self.workspace, ignore_errors=True)
         shutil.rmtree(project, ignore_errors=True)
@@ -139,5 +194,29 @@ if __name__ == "__main__":
     p.add_argument("challenge", type=lambda s: s if Path(s).is_dir() else p.error("%s is not a valid task" % s))
     p.add_argument("--agent", type=str, choices=["claude", "codex"], default="claude")
     p.add_argument("--model", type=str, default=None, help="Agent model override")
+    p.add_argument(
+        "--overlay",
+        action="append",
+        default=[],
+        metavar="SOURCE:DESTINATION",
+        help="Copy SOURCE into the prepared workspace at DESTINATION before the agent runs. May repeat.",
+    )
+    p.add_argument(
+        "--instruction-prefix-file",
+        type=str,
+        default=None,
+        help="Prepend this file's contents to the challenge instruction before running the agent.",
+    )
+    p.add_argument("--skip-agent", action="store_true", help="Prepare, overlay, and capture without invoking the agent")
+    p.add_argument("--keep-workspace", action="store_true", help="Do not delete the prepared workspace after capture")
     a = p.parse_args()
-    Runner(a.framework, a.challenge, a.agent, a.model).launch()
+    Runner(
+        a.framework,
+        a.challenge,
+        a.agent,
+        a.model,
+        a.overlay,
+        a.instruction_prefix_file,
+        a.skip_agent,
+        a.keep_workspace,
+    ).launch()
