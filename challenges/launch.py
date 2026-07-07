@@ -1,8 +1,10 @@
 import argparse
 import os
 import secrets
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 WORKSPACE = Path("workspace").resolve()
@@ -18,15 +20,15 @@ os.environ.setdefault("HF_HOME", HF_HOME.as_posix())
 os.environ.setdefault("HF_TOKEN_PATH", HF_TOKEN_PATH.as_posix())
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 
-for tool in ("uv", "claude"):
+for tool in ("uv",):
     if shutil.which(tool) is None:
         raise SystemExit("required tool not on PATH: %s" % tool)
 
 
 class Runner:
 
-    def __init__(self, framework: str, challenge: str):
-        self.framework, self.challenge = framework, challenge
+    def __init__(self, framework: str, challenge: str, agent: str, model: str | None):
+        self.framework, self.challenge, self.agent, self.model = framework, challenge, agent, model
         self.uuid = "-".join([framework, secrets.token_hex(3)])
         self.workspace = Path(WORKSPACE, challenge, self.uuid)
         self.workspace.mkdir(parents=True, exist_ok=False)
@@ -41,8 +43,19 @@ class Runner:
         # Run the agent in the workspace; stream its JSON events to stdout for progress.
         instruction = Path(self.challenge, "instruction.md").read_text()
         instruction = instruction.format(framework=self.framework)
+        if self.agent == "claude":
+            args = self.claude_args(instruction)
+        elif self.agent == "codex":
+            args = self.codex_args(instruction)
+        else:
+            raise ValueError("unsupported agent: %s" % self.agent)
+        self.run_agent(args)
+
+    def claude_args(self, instruction: str):
+        if shutil.which("claude") is None:
+            raise SystemExit("required tool not on PATH: claude")
         args = ["claude", "--print"]
-        args.extend(["--model", "claude-opus-4-7", "--effort", "xhigh"])
+        args.extend(["--model", self.model or "claude-opus-4-7", "--effort", "xhigh"])
         args.extend(["--output-format", "stream-json", "--include-partial-messages"])
         # question-and-answer challenges are read-only: the agent investigates the code, never edits it.
         # Keep --disallowedTools ahead of other flags so its variadic value never swallows the instruction.
@@ -50,7 +63,39 @@ class Runner:
             args.extend(["--disallowedTools", "Edit,Write,NotebookEdit"])
         args.extend(["--dangerously-skip-permissions", "--verbose"])
         args.append(instruction)
-        subprocess.run(args, cwd=self.workspace, check=True)
+        return args
+
+    def codex_args(self, instruction: str):
+        if shutil.which("codex") is None:
+            raise SystemExit("required tool not on PATH: codex")
+        last_message = Path(self.workspace, "artifacts", "codex-last-message.txt")
+        args = ["codex", "exec", "--json"]
+        args.extend(["-C", self.workspace.as_posix()])
+        args.extend(["-o", last_message.as_posix()])
+        if self.model:
+            args.extend(["--model", self.model])
+        # ATE-Bench workspaces are disposable sandboxes. Match Claude Code's
+        # permission-skipping behavior so environment setup and profiling tasks
+        # can run without interactive approval prompts.
+        args.append("--dangerously-bypass-approvals-and-sandbox")
+        args.append(instruction)
+        return args
+
+    def run_agent(self, args):
+        events = Path(self.workspace, "artifacts", "%s-events.jsonl" % self.agent)
+        command = Path(self.workspace, "artifacts", "%s-command.txt" % self.agent)
+        command.write_text(" ".join(shlex.quote(str(arg)) for arg in args) + "\n")
+        with events.open("wb") as log:
+            proc = subprocess.Popen(args, cwd=self.workspace, stdout=subprocess.PIPE)
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                sys.stdout.buffer.write(line)
+                sys.stdout.buffer.flush()
+                log.write(line)
+                log.flush()
+            returncode = proc.wait()
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, args)
 
     def capture(self):
         snapshot = Path("snapshots", self.challenge, self.uuid)
@@ -64,13 +109,15 @@ class Runner:
                 continue
             with Path(patches, "%s.patch" % codebase.name).open("wb") as patch:
                 subprocess.run(["git", "diff", "--cached", "--binary", "main"], cwd=codebase, stdout=patch, check=True)
-        # Capture the artifacts and the claude code session.
+        # Capture the artifacts and any agent-specific session directory.
         shutil.copytree(Path(self.workspace, "artifacts"), Path(snapshot, "artifacts"), dirs_exist_ok=True)
-        project = Path(Path.home(), ".claude/projects", self.workspace.as_posix().replace("/", "-"))
-        shutil.copytree(project, Path(snapshot, "claude-session"), dirs_exist_ok=True)
+        if self.agent == "claude":
+            project = Path(Path.home(), ".claude/projects", self.workspace.as_posix().replace("/", "-"))
+            if project.exists():
+                shutil.copytree(project, Path(snapshot, "claude-session"), dirs_exist_ok=True)
 
     def cleanup(self):
-        # Remove the workspace and the claude code session.
+        # Remove the workspace and any claude code session.
         project = Path(Path.home(), ".claude/projects", self.workspace.as_posix().replace("/", "-"))
         shutil.rmtree(self.workspace, ignore_errors=True)
         shutil.rmtree(project, ignore_errors=True)
@@ -90,5 +137,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("framework", type=str, choices=["torchtitan", "pith-train", "Megatron-LM"])
     p.add_argument("challenge", type=lambda s: s if Path(s).is_dir() else p.error("%s is not a valid task" % s))
+    p.add_argument("--agent", type=str, choices=["claude", "codex"], default="claude")
+    p.add_argument("--model", type=str, default=None, help="Agent model override")
     a = p.parse_args()
-    Runner(a.framework, a.challenge).launch()
+    Runner(a.framework, a.challenge, a.agent, a.model).launch()
