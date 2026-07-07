@@ -39,9 +39,10 @@ class Runner:
         agent: str,
         model: str | None,
         overlays: list[str],
-        instruction_prefix_file: str | None,
+        instruction_prefix_files: list[str],
         run_label: str | None,
         codex_bypass_approvals: bool,
+        agent_container_image: str | None,
         success_artifact: str | None,
         success_artifact_contains: str | None,
         stop_after_success_artifact: bool,
@@ -50,9 +51,10 @@ class Runner:
     ):
         self.framework, self.challenge, self.agent, self.model = framework, challenge, agent, model
         self.overlays = overlays
-        self.instruction_prefix_file = instruction_prefix_file
+        self.instruction_prefix_files = instruction_prefix_files
         self.run_label = self.sanitize_run_label(run_label)
         self.codex_bypass_approvals = codex_bypass_approvals
+        self.agent_container_image = agent_container_image
         self.success_artifact = success_artifact
         self.success_artifact_contains = success_artifact_contains
         self.stop_after_success_artifact = stop_after_success_artifact
@@ -158,9 +160,11 @@ class Runner:
         )
         instruction = Path(self.challenge, "instruction.md").read_text()
         instruction = instruction.format(framework=self.framework)
-        if self.instruction_prefix_file:
-            prefix = Path(self.instruction_prefix_file).read_text()
-            instruction = prefix.rstrip() + "\n\n" + instruction
+        if self.instruction_prefix_files:
+            prefixes = [Path(prefix_file).read_text().rstrip() for prefix_file in self.instruction_prefix_files]
+            instruction = "\n\n".join(prefixes + [instruction])
+        phase_log = Path(self.workspace, "artifacts", "install-phases.jsonl")
+        os.environ["ATE_INSTALL_PHASE_LOG"] = phase_log.as_posix()
         metadata = {
             "framework": self.framework,
             "challenge": self.challenge,
@@ -168,12 +172,14 @@ class Runner:
             "model": self.model,
             "run_label": self.run_label,
             "overlays": self.overlays,
-            "instruction_prefix_file": self.instruction_prefix_file,
+            "instruction_prefix_files": self.instruction_prefix_files,
             "codex_bypass_approvals": self.codex_bypass_approvals,
+            "agent_container_image": self.agent_container_image,
             "success_artifact": self.success_artifact,
             "success_artifact_contains": self.success_artifact_contains,
             "stop_after_success_artifact": self.stop_after_success_artifact,
             "workspace": self.workspace.as_posix(),
+            "install_phase_log": "artifacts/install-phases.jsonl",
         }
         Path(self.workspace, "artifacts", "run-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
         Path(self.workspace, "artifacts", "%s-instruction.md" % self.agent).write_text(instruction)
@@ -220,9 +226,11 @@ class Runner:
     def codex_args(self, instruction: str):
         if not self.skip_agent and shutil.which("codex") is None:
             raise SystemExit("required tool not on PATH: codex")
+        policy_rule = self.write_codex_exec_policy_rules()
         last_message = Path(self.workspace, "artifacts", "codex-last-message.txt")
         args = ["codex", "exec", "--json"]
         args.extend(["-c", 'shell_environment_policy.inherit="all"'])
+        args.extend(["--sandbox", "workspace-write"])
         args.extend(["-C", self.workspace.as_posix()])
         args.extend(["-o", last_message.as_posix()])
         if self.model:
@@ -235,10 +243,75 @@ class Runner:
         if self.codex_bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
         args.append(instruction)
+        if self.agent_container_image:
+            args = self.containerized_agent_args(args, policy_rule)
+        return args
+
+    def write_codex_exec_policy_rules(self):
+        rules_dir = Path(self.workspace, ".codex", "rules")
+        rules_dir.mkdir(parents=True, exist_ok=True)
+        policy_rule = Path(rules_dir, "default.rules")
+        policy_rule.write_text(
+            "\n".join(
+                [
+                    'prefix_rule(pattern=["/usr/bin/bash", "-c"], decision="allow")',
+                    'prefix_rule(pattern=["/usr/bin/bash", "-lc"], decision="allow")',
+                    "",
+                ]
+            )
+        )
+        return policy_rule
+
+    def containerized_agent_args(self, inner_args: list[str], policy_rule: Path | None):
+        home = Path.home()
+        env_names = [
+            "CUDA_HOME",
+            "CUDA_PATH",
+            "HF_HOME",
+            "HF_TOKEN_PATH",
+            "LD_LIBRARY_PATH",
+            "ATE_INSTALL_PHASE_LOG",
+            "PIP_CACHE_DIR",
+            "PYTHONUNBUFFERED",
+            "UV_CACHE_DIR",
+        ]
+        args = [
+            "docker",
+            "run",
+            "--rm",
+            "--gpus",
+            "all",
+            "--network",
+            "host",
+            "--user",
+            "%s:%s" % (os.getuid(), os.getgid()),
+            "-e",
+            "HOME=%s" % home,
+            "-e",
+            "PATH=%s" % os.environ.get("PATH", ""),
+        ]
+        for name in env_names:
+            if name in os.environ:
+                args.extend(["-e", "%s=%s" % (name, os.environ[name])])
+        for path in [
+            Path.cwd(),
+            Path(os.environ.get("UV_CACHE_DIR", "")).parent if os.environ.get("UV_CACHE_DIR") else None,
+            home / "node20",
+            home / ".codex",
+            home / ".local",
+        ]:
+            if path and path.exists():
+                args.extend(["-v", "%s:%s" % (path, path)])
+        if policy_rule and policy_rule.exists():
+            container_rule = Path(home, ".codex", "rules", "ate-bench.rules")
+            args.extend(["-v", "%s:%s:ro" % (policy_rule, container_rule)])
+        args.extend(["-w", self.workspace.as_posix(), self.agent_container_image])
+        args.extend(inner_args)
         return args
 
     def run_agent(self, args, attempt_started_monotonic: float, attempt_started_epoch: float):
         events = Path(self.workspace, "artifacts", "%s-events.jsonl" % self.agent)
+        timed_events = Path(self.workspace, "artifacts", "%s-events-timed.jsonl" % self.agent)
         self.write_agent_command(args)
         agent_started_monotonic = time.monotonic()
         agent_started_epoch = time.time()
@@ -247,7 +320,7 @@ class Runner:
                 "agent_started_at": self.utc_now(),
             }
         )
-        with events.open("wb") as log:
+        with events.open("wb") as log, timed_events.open("w") as timed_log:
             proc = subprocess.Popen(args, cwd=self.workspace, stdout=subprocess.PIPE)
             assert proc.stdout is not None
             stopped_after_success = False
@@ -261,6 +334,7 @@ class Runner:
                         sys.stdout.buffer.flush()
                         log.write(line)
                         log.flush()
+                        self.write_timed_event(timed_log, line, agent_started_epoch)
                     elif proc.poll() is not None:
                         break
                 elif proc.poll() is not None:
@@ -289,6 +363,7 @@ class Runner:
                         proc.wait()
                     break
             returncode = proc.wait()
+        phase_metrics = self.write_install_phase_metrics()
         self.write_run_metrics(
             {
                 "agent_finished_at": self.utc_now(),
@@ -300,10 +375,242 @@ class Runner:
                     attempt_started_epoch, agent_started_epoch
                 ),
                 "install_smoke": self.install_smoke_metrics(attempt_started_epoch, agent_started_epoch),
+                "install_phases": phase_metrics,
             }
         )
         if returncode and not stopped_after_success:
             raise subprocess.CalledProcessError(returncode, args)
+
+    def write_timed_event(self, timed_log, line: bytes, agent_started_epoch: float):
+        received_epoch = time.time()
+        text = line.decode("utf-8", errors="replace").rstrip("\n")
+        payload = {
+            "received_at": self.iso_from_epoch(received_epoch),
+            "received_epoch": round(received_epoch, 6),
+            "since_agent_start_sec": round(max(0.0, received_epoch - agent_started_epoch), 3),
+        }
+        try:
+            payload["event"] = json.loads(text)
+        except json.JSONDecodeError:
+            payload["raw"] = text
+        timed_log.write(json.dumps(payload, sort_keys=True) + "\n")
+        timed_log.flush()
+
+    def write_install_phase_metrics(self):
+        timed_events = Path(self.workspace, "artifacts", "%s-events-timed.jsonl" % self.agent)
+        metrics_path = Path(self.workspace, "artifacts", "install-phase-metrics.json")
+        timeline_path = Path(self.workspace, "artifacts", "command-timeline.json")
+        if not timed_events.exists():
+            metrics = {"available": False, "reason": "timed event stream not found"}
+            metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
+            return metrics
+
+        commands_by_id: dict[str, dict] = {}
+        with timed_events.open() as f:
+            for raw in f:
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                event = payload.get("event")
+                if not isinstance(event, dict):
+                    continue
+                item = event.get("item")
+                if not isinstance(item, dict) or item.get("type") != "command_execution":
+                    continue
+                command_id = str(item.get("id") or len(commands_by_id))
+                command = item.get("command") or ""
+                record = commands_by_id.setdefault(
+                    command_id,
+                    {
+                        "id": command_id,
+                        "command": command,
+                    },
+                )
+                if command and not record.get("command"):
+                    record["command"] = command
+                if event.get("type") == "item.started":
+                    record["started_at"] = payload.get("received_at")
+                    record["started_epoch"] = payload.get("received_epoch")
+                    record["started_since_agent_sec"] = payload.get("since_agent_start_sec")
+                elif event.get("type") == "item.completed":
+                    record["finished_at"] = payload.get("received_at")
+                    record["finished_epoch"] = payload.get("received_epoch")
+                    record["finished_since_agent_sec"] = payload.get("since_agent_start_sec")
+                    for field in ("exit_code", "status"):
+                        if field in item:
+                            record[field] = item[field]
+
+        timeline = []
+        for record in commands_by_id.values():
+            started = record.get("started_epoch")
+            finished = record.get("finished_epoch")
+            if isinstance(started, (int, float)) and isinstance(finished, (int, float)):
+                record["elapsed_sec"] = round(max(0.0, finished - started), 3)
+            record["phase"] = self.classify_install_command(record.get("command", ""))
+            timeline.append(record)
+        timeline.sort(key=lambda item: item.get("started_epoch") or item.get("finished_epoch") or 0)
+
+        command_phases: dict[str, dict] = {}
+        for record in timeline:
+            phase = record["phase"]
+            phase_metrics = command_phases.setdefault(
+                phase,
+                {
+                    "commands": 0,
+                    "elapsed_sec": 0.0,
+                    "first_started_since_agent_sec": None,
+                    "last_finished_since_agent_sec": None,
+                },
+            )
+            phase_metrics["commands"] += 1
+            elapsed = record.get("elapsed_sec")
+            if isinstance(elapsed, (int, float)):
+                phase_metrics["elapsed_sec"] = round(phase_metrics["elapsed_sec"] + elapsed, 3)
+            started_since = record.get("started_since_agent_sec")
+            finished_since = record.get("finished_since_agent_sec")
+            if isinstance(started_since, (int, float)) and (
+                phase_metrics["first_started_since_agent_sec"] is None
+                or started_since < phase_metrics["first_started_since_agent_sec"]
+            ):
+                phase_metrics["first_started_since_agent_sec"] = started_since
+            if isinstance(finished_since, (int, float)) and (
+                phase_metrics["last_finished_since_agent_sec"] is None
+                or finished_since > phase_metrics["last_finished_since_agent_sec"]
+            ):
+                phase_metrics["last_finished_since_agent_sec"] = finished_since
+
+        explicit_phases = self.read_explicit_phase_metrics()
+        if explicit_phases:
+            phases = explicit_phases
+            phase_source = "install-phases.jsonl"
+        else:
+            phases = command_phases
+            phase_source = "%s-events-timed.jsonl" % self.agent
+
+        metrics = {
+            "available": True,
+            "source": phase_source,
+            "command_timeline_source": "%s-events-timed.jsonl" % self.agent,
+            "timeline": "artifacts/command-timeline.json",
+            "commands": len(timeline),
+            "phases": phases,
+            "command_phases": command_phases,
+        }
+        timeline_path.write_text(json.dumps(timeline, indent=2, sort_keys=True) + "\n")
+        metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True) + "\n")
+        return metrics
+
+    def read_explicit_phase_metrics(self):
+        phase_log = Path(self.workspace, "artifacts", "install-phases.jsonl")
+        if not phase_log.exists():
+            return {}
+
+        active: dict[str, list[dict]] = {}
+        phases: dict[str, dict] = {}
+        with phase_log.open() as f:
+            for raw in f:
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                phase = event.get("phase")
+                event_type = event.get("event")
+                epoch = event.get("epoch")
+                since_agent = event.get("since_agent_start_sec")
+                if not isinstance(phase, str) or not isinstance(event_type, str):
+                    continue
+                if event_type == "start":
+                    active.setdefault(phase, []).append(event)
+                    metrics = phases.setdefault(
+                        phase,
+                        {
+                            "commands": None,
+                            "elapsed_sec": 0.0,
+                            "first_started_since_agent_sec": None,
+                            "last_finished_since_agent_sec": None,
+                        },
+                    )
+                    if isinstance(since_agent, (int, float)) and (
+                        metrics["first_started_since_agent_sec"] is None
+                        or since_agent < metrics["first_started_since_agent_sec"]
+                    ):
+                        metrics["first_started_since_agent_sec"] = since_agent
+                elif event_type == "end":
+                    starts = active.get(phase) or []
+                    start = starts.pop() if starts else {}
+                    start_epoch = start.get("epoch")
+                    elapsed = event.get("elapsed_sec")
+                    if (
+                        not isinstance(elapsed, (int, float))
+                        and isinstance(start_epoch, (int, float))
+                        and isinstance(epoch, (int, float))
+                    ):
+                        elapsed = max(0.0, epoch - start_epoch)
+                    metrics = phases.setdefault(
+                        phase,
+                        {
+                            "commands": None,
+                            "elapsed_sec": 0.0,
+                            "first_started_since_agent_sec": start.get("since_agent_start_sec"),
+                            "last_finished_since_agent_sec": None,
+                        },
+                    )
+                    if isinstance(elapsed, (int, float)):
+                        metrics["elapsed_sec"] = round(metrics["elapsed_sec"] + elapsed, 3)
+                    if isinstance(since_agent, (int, float)) and (
+                        metrics["last_finished_since_agent_sec"] is None
+                        or since_agent > metrics["last_finished_since_agent_sec"]
+                    ):
+                        metrics["last_finished_since_agent_sec"] = since_agent
+        return phases
+
+    @staticmethod
+    def classify_install_command(command: str) -> str:
+        command_l = command.lower()
+        if "install_te_pypi.sh" in command_l:
+            return "megatron+te-install"
+        if "pip install" in command_l and (
+            "torch==" in command_l
+            or "--torch-backend" in command_l
+            or "download.pytorch.org" in command_l
+        ):
+            return "torch-bootstrap"
+        if "uv venv" in command_l or "python -m venv" in command_l:
+            return "torch-bootstrap"
+        if (
+            "install-smoke.log" in command_l
+            or "install smoke: ok" in command_l
+            or "transformer_engine" in command_l
+            or "transformer-engine" in command_l
+            or "pip install" in command_l
+            and (
+                " -e " in command_l
+                or "megatron-core" in command_l
+                or "megatron-lm" in command_l
+                or " .[" in command_l
+                or " -e ." in command_l
+            )
+        ):
+            return "megatron+te-install"
+        if any(
+            marker in command_l
+            for marker in (
+                "rg ",
+                "sed ",
+                "cat ",
+                "git status",
+                "git log",
+                "uv --version",
+                "python",
+                "nvidia-smi",
+                "nvcc --version",
+                "ps ",
+                "du ",
+            )
+        ):
+            return "inspect"
+        return "other"
 
     def install_smoke_metrics(self, attempt_started_epoch: float, agent_started_epoch: float | None = None):
         smoke = Path(self.workspace, "artifacts", "install-smoke.log")
@@ -421,6 +728,12 @@ if __name__ == "__main__":
         help="Use Codex's approval/sandbox bypass flag for disposable ATE workspaces.",
     )
     p.add_argument(
+        "--agent-container-image",
+        type=str,
+        default=None,
+        help="Run the agent inside this Docker image, mounting the ATE workspace and local Codex/uv tools.",
+    )
+    p.add_argument(
         "--success-artifact",
         type=str,
         default=None,
@@ -446,9 +759,10 @@ if __name__ == "__main__":
     )
     p.add_argument(
         "--instruction-prefix-file",
+        action="append",
+        default=[],
         type=str,
-        default=None,
-        help="Prepend this file's contents to the challenge instruction before running the agent.",
+        help="Prepend this file's contents to the challenge instruction before running the agent. May repeat.",
     )
     p.add_argument("--run-label", type=str, default=None, help="Label this run in the workspace/snapshot id")
     p.add_argument("--skip-agent", action="store_true", help="Prepare, overlay, and capture without invoking the agent")
@@ -463,6 +777,7 @@ if __name__ == "__main__":
         a.instruction_prefix_file,
         a.run_label,
         a.codex_bypass_approvals,
+        a.agent_container_image,
         a.success_artifact,
         a.success_artifact_contains,
         a.stop_after_success_artifact,

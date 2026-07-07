@@ -81,6 +81,33 @@ def load_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def phase_elapsed_summary(phase_metrics: dict[str, Any]) -> str:
+    if not phase_metrics.get("available"):
+        return ""
+    phases = phase_metrics.get("phases")
+    if not isinstance(phases, dict):
+        return ""
+    ordered = [
+        "inspect",
+        "torch-bootstrap",
+        "megatron+te-install",
+        "other",
+    ]
+    parts = []
+    for phase in ordered:
+        metrics = phases.get(phase)
+        if not isinstance(metrics, dict):
+            continue
+        elapsed = metrics.get("elapsed_sec")
+        commands = metrics.get("commands")
+        elapsed_text = format_seconds(elapsed)
+        if commands is None:
+            parts.append(f"{phase}={elapsed_text}s")
+        else:
+            parts.append(f"{phase}={elapsed_text}s/{commands}cmd")
+    return ", ".join(parts)
+
+
 def is_tool_like(mapping: dict[str, Any]) -> bool:
     fields = " ".join(
         text_field(mapping.get(key)).lower()
@@ -150,6 +177,7 @@ def summarize(path: Path) -> dict[str, Any]:
 
     metadata = load_json(path.parent / "run-metadata.json")
     metrics = load_json(path.parent / "run-metrics.json")
+    phase_metrics = load_json(path.parent / "install-phase-metrics.json")
     install_smoke = metrics.get("install_smoke") if isinstance(metrics.get("install_smoke"), dict) else {}
     success_artifact = (
         metrics.get("success_artifact") if isinstance(metrics.get("success_artifact"), dict) else {}
@@ -195,6 +223,8 @@ def summarize(path: Path) -> dict[str, Any]:
         "stopped_after_success_artifact": bool(metrics.get("stopped_after_success_artifact")),
         "install_smoke": install_smoke,
         "success_artifact": success_artifact,
+        "install_phase_metrics": phase_metrics,
+        "phase_elapsed_summary": phase_elapsed_summary(phase_metrics),
     }
 
 
@@ -249,6 +279,8 @@ def print_text(rows: list[dict[str, Any]]) -> None:
         if row["top_tool_like_names"]:
             tools = ", ".join(f"{name}={count}" for name, count in row["top_tool_like_names"])
             print(f"  tool_like_names: {tools}")
+        if row.get("phase_elapsed_summary"):
+            print(f"  phase_elapsed_s: {row['phase_elapsed_summary']}")
 
 
 def main() -> None:

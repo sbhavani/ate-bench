@@ -7,6 +7,8 @@ CHALLENGE=challenges/operate-and-profile/install-only
 AGENT=codex
 MODEL=
 OVERLAY_ROOT=
+AGENT_CONTAINER_IMAGE=
+COMMON_INSTRUCTION_PREFIX_FILE=
 TORCH_BACKEND=
 NVTE_CUDA_ARCHS=
 TORCH_CUDA_ARCH_LIST=
@@ -29,6 +31,10 @@ options:
   --challenge PATH      Challenge directory (default: operate-and-profile/install-only)
   --agent NAME          Agent backend (default: codex)
   --model NAME          Agent model override
+  --agent-container-image IMAGE
+                        Run the agent inside this Docker image
+  --common-instruction-prefix-file PATH
+                        Prepend shared benchmark instructions to both attempts
   --torch-backend NAME  Override ATE_TORCH_BACKEND for CUDA host compatibility
   --nvte-cuda-archs X   Override ATE_NVTE_CUDA_ARCHS, e.g. 90
   --torch-cuda-arch X   Override ATE_TORCH_CUDA_ARCH_LIST, e.g. 9.0
@@ -59,6 +65,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --model)
             MODEL=$2
+            shift 2
+            ;;
+        --agent-container-image)
+            AGENT_CONTAINER_IMAGE=$2
+            shift 2
+            ;;
+        --common-instruction-prefix-file)
+            COMMON_INSTRUCTION_PREFIX_FILE=$2
             shift 2
             ;;
         --torch-backend)
@@ -136,6 +150,12 @@ COMMON_ARGS=(Megatron-LM "$CHALLENGE" --agent "$AGENT")
 if [[ -n "$MODEL" ]]; then
     COMMON_ARGS+=(--model "$MODEL")
 fi
+if [[ -n "$AGENT_CONTAINER_IMAGE" ]]; then
+    COMMON_ARGS+=(--agent-container-image "$AGENT_CONTAINER_IMAGE")
+fi
+if [[ -n "$COMMON_INSTRUCTION_PREFIX_FILE" ]]; then
+    COMMON_ARGS+=(--instruction-prefix-file "$COMMON_INSTRUCTION_PREFIX_FILE")
+fi
 if [[ "$AGENT" == "codex" && "$CODEX_BYPASS_APPROVALS" -eq 0 ]]; then
     COMMON_ARGS+=(--no-codex-bypass-approvals)
 fi
@@ -161,9 +181,11 @@ run_launch() {
 
     if [[ -n "$BASE_UV_CACHE_DIR" ]]; then
         local attempt_cache="$BASE_UV_CACHE_DIR/$label"
+        local attempt_pip_cache="$attempt_cache/pip"
         mkdir -p "$attempt_cache"
+        mkdir -p "$attempt_pip_cache"
         echo "Using UV_CACHE_DIR=$attempt_cache"
-        UV_CACHE_DIR="$attempt_cache" python3 challenges/launch.py "$@"
+        UV_CACHE_DIR="$attempt_cache" PIP_CACHE_DIR="$attempt_pip_cache" python3 challenges/launch.py "$@"
     else
         python3 challenges/launch.py "$@"
     fi
