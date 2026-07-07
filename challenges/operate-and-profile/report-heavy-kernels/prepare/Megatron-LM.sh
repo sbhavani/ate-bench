@@ -43,7 +43,9 @@ build_environment()
     uv pip install --python .venv/bin/python --no-config cmake ninja zstandard
     export CPATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","include"))))')${CPATH:+:$CPATH}"
     export LIBRARY_PATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","lib"))))')${LIBRARY_PATH:+:$LIBRARY_PATH}"
-    uv sync --extra dev --extra mlm --no-group test --no-install-package nvidia-resiliency-ext --inexact
+    # Keep prepare on the MCore/TE path; dev pulls unrelated native kernels.
+    MAX_JOBS="${ATE_MAX_JOBS:-4}" NVTE_BUILD_THREADS_PER_JOB="${ATE_NVTE_BUILD_THREADS_PER_JOB:-1}" NVTE_FRAMEWORK=pytorch \
+        uv pip install --python .venv/bin/python --no-config --no-build-isolation -e ".[training,te]"
     if [[ "${ATE_INSTALL_APEX:-0}" == "1" ]]; then
         uv pip install --python .venv/bin/python --no-config --no-build-isolation -C="--build-option=--cpp_ext" -C="--build-option=--cuda_ext" "apex @ git+https://github.com/NVIDIA/apex.git"
     fi
