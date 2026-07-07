@@ -153,11 +153,27 @@ if [[ "$KEEP_WORKSPACE" -eq 1 ]]; then
     COMMON_ARGS+=(--keep-workspace)
 fi
 
+BASE_UV_CACHE_DIR="${UV_CACHE_DIR:-}"
+
+run_launch() {
+    local label=$1
+    shift
+
+    if [[ -n "$BASE_UV_CACHE_DIR" ]]; then
+        local attempt_cache="$BASE_UV_CACHE_DIR/$label"
+        mkdir -p "$attempt_cache"
+        echo "Using UV_CACHE_DIR=$attempt_cache"
+        UV_CACHE_DIR="$attempt_cache" python3 challenges/launch.py "$@"
+    else
+        python3 challenges/launch.py "$@"
+    fi
+}
+
 echo "== baseline: no Megatron install skills =="
-python3 challenges/launch.py "${COMMON_ARGS[@]}" --run-label baseline
+run_launch baseline "${COMMON_ARGS[@]}" --run-label baseline
 
 echo "== with-skills: Megatron install skill overlay =="
-python3 challenges/launch.py "${COMMON_ARGS[@]}" \
+run_launch with-skills "${COMMON_ARGS[@]}" \
     --run-label with-skills \
     --overlay "$OVERLAY_ROOT/AGENTS.md:Megatron-LM/AGENTS.md" \
     --overlay "$OVERLAY_ROOT/skills:Megatron-LM/skills" \
