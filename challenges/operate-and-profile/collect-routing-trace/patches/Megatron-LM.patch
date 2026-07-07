@@ -83,6 +83,7 @@ index 0000000..0a43775
 +INFRA_CONFIG[use-distributed-optimizer]=true
 +INFRA_CONFIG[overlap-param-gather]=true
 +INFRA_CONFIG[overlap-grad-reduce]=true
++INFRA_CONFIG[no-gradient-accumulation-fusion]=true
 +INFRA_CONFIG[cross-entropy-loss-fusion]=true
 +INFRA_CONFIG[cross-entropy-fusion-impl]=te
 +INFRA_CONFIG[no-create-attention-mask-in-dataloader]=true

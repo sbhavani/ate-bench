@@ -21,6 +21,17 @@ setup_codebase()
     git -C Megatron-Bridge fetch --depth 1 origin $MEGATRON_BRIDGE_SHA
     git -C Megatron-Bridge checkout FETCH_HEAD
     git -C Megatron-Bridge apply $MEGATRON_BRIDGE_PATCH
+    python3 - <<'PY'
+from pathlib import Path
+
+path = Path("Megatron-Bridge/src/megatron/bridge/models/deepseek/deepseek_v2_bridge.py")
+old = "        provider.gradient_accumulation_fusion = True"
+new = "        provider.gradient_accumulation_fusion = False"
+text = path.read_text()
+if old not in text:
+    raise SystemExit(f"{path}: expected gradient_accumulation_fusion setting not found")
+path.write_text(text.replace(old, new, 1))
+PY
 
     git init lm-evaluation-harness
     git -C lm-evaluation-harness remote add origin $LM_EVALUATION_HARNESS_URL

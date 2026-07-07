@@ -59,7 +59,8 @@ same challenge once without skills and once with the Megatron install-skill
 overlay. The helper skips Apex during prepare by default because the prepare
 venv is discarded before the agent runs and the Megatron Core/TE challenge path
 does not need Apex; pass `--install-apex` only when intentionally testing that
-legacy dependency path.
+legacy dependency path. The bundled Megatron challenge patches disable
+gradient-accumulation fusion so this no-Apex path remains valid.
 
 ```bash
 experiments/run-megatron-install-comparison.sh \
