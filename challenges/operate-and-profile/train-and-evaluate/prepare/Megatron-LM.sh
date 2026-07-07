@@ -54,6 +54,7 @@ build_environment()
     TRANSFORMER_ENGINE_SPEC=${ATE_TRANSFORMER_ENGINE_SPEC:-"transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@5671fd3675906cda1ade26c24a65d3dedd88eb89"}
     RUNTIME_DEPS=(
         "$TRANSFORMER_ENGINE_SPEC"
+        "nvidia-modelopt[torch]"
         flask-restful sentencepiece tiktoken wandb transformers accelerate omegaconf
         datasets tensorboard rich six hydra-core tqdm
         "einops~=0.8" "tensorstore~=0.1,!=0.1.46,!=0.1.72" "nvtx~=0.2" "nv-grouped-gemm~=1.1"
