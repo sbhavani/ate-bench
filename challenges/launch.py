@@ -49,6 +49,7 @@ class Runner:
         success_artifact: str | None,
         success_artifact_contains: str | None,
         stop_after_success_artifact: bool,
+        success_artifact_grace_sec: float,
         skip_agent: bool,
         keep_workspace: bool,
     ):
@@ -64,6 +65,7 @@ class Runner:
         self.success_artifact = success_artifact
         self.success_artifact_contains = success_artifact_contains
         self.stop_after_success_artifact = stop_after_success_artifact
+        self.success_artifact_grace_sec = success_artifact_grace_sec
         self.skip_agent = skip_agent
         self.keep_workspace = keep_workspace
         uuid_parts = [framework]
@@ -187,6 +189,7 @@ class Runner:
             "success_artifact": self.success_artifact,
             "success_artifact_contains": self.success_artifact_contains,
             "stop_after_success_artifact": self.stop_after_success_artifact,
+            "success_artifact_grace_sec": self.success_artifact_grace_sec,
             "workspace": self.workspace.as_posix(),
             "install_phase_log": "artifacts/install-phases.jsonl",
         }
@@ -392,6 +395,7 @@ class Runner:
             assert proc.stdout is not None
             stopped_after_success = False
             success_metric_written = False
+            success_ready_monotonic = None
             while True:
                 ready, _, _ = select.select([proc.stdout], [], [], 1.0)
                 if ready:
@@ -410,7 +414,10 @@ class Runner:
                 success_metrics = self.success_artifact_metrics(
                     attempt_started_epoch, agent_started_epoch
                 )
-                if success_metrics.get("ready") and not success_metric_written:
+                success_ready = success_metrics.get("ready")
+                if success_ready and success_ready_monotonic is None:
+                    success_ready_monotonic = time.monotonic()
+                if success_ready and not success_metric_written:
                     self.write_run_metrics(
                         {
                             "success_artifact": success_metrics,
@@ -420,7 +427,15 @@ class Runner:
                         }
                     )
                     success_metric_written = True
-                if self.stop_after_success_artifact and success_metrics.get("ready"):
+                if self.stop_after_success_artifact and success_ready:
+                    grace_elapsed = 0.0
+                    if success_ready_monotonic is not None:
+                        grace_elapsed = time.monotonic() - success_ready_monotonic
+                    if (
+                        self.success_artifact_grace_sec > 0
+                        and grace_elapsed < self.success_artifact_grace_sec
+                    ):
+                        continue
                     stopped_after_success = True
                     proc.terminate()
                     try:
@@ -836,6 +851,15 @@ if __name__ == "__main__":
         help="Terminate the agent after the success artifact is ready, then capture artifacts.",
     )
     p.add_argument(
+        "--success-artifact-grace-sec",
+        type=float,
+        default=0.0,
+        help=(
+            "After --success-artifact is ready, wait this many seconds for the agent to exit "
+            "naturally before terminating it. Useful for preserving final usage metrics."
+        ),
+    )
+    p.add_argument(
         "--overlay",
         action="append",
         default=[],
@@ -869,6 +893,7 @@ if __name__ == "__main__":
         a.success_artifact,
         a.success_artifact_contains,
         a.stop_after_success_artifact,
+        a.success_artifact_grace_sec,
         a.skip_agent,
         a.keep_workspace,
     ).launch()

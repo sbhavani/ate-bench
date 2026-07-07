@@ -20,6 +20,7 @@ KEEP_WORKSPACE=0
 CODEX_BYPASS_APPROVALS=1
 CODEX_SANDBOX=workspace-write
 STOP_AFTER_SUCCESS_ARTIFACT=1
+SUCCESS_ARTIFACT_GRACE_SEC=
 
 usage() {
     cat <<'EOF'
@@ -51,6 +52,8 @@ options:
   --codex-sandbox MODE  Sandbox passed to Codex (default: workspace-write)
   --no-stop-after-success-artifact
                         Let the agent final-answer instead of stopping once smoke passes
+  --success-artifact-grace-sec SEC
+                        Wait up to SEC seconds after smoke passes for final usage metrics
   --skip-agent          Prepare/capture only; useful for harness validation
   --keep-workspace      Keep prepared workspace directories
   -h, --help            Show this help
@@ -118,6 +121,10 @@ while [[ $# -gt 0 ]]; do
         --no-stop-after-success-artifact)
             STOP_AFTER_SUCCESS_ARTIFACT=0
             shift
+            ;;
+        --success-artifact-grace-sec)
+            SUCCESS_ARTIFACT_GRACE_SEC=$2
+            shift 2
             ;;
         --skip-agent)
             SKIP_AGENT=1
@@ -194,6 +201,9 @@ COMMON_ARGS+=(
 )
 if [[ "$STOP_AFTER_SUCCESS_ARTIFACT" -eq 1 ]]; then
     COMMON_ARGS+=(--stop-after-success-artifact)
+fi
+if [[ -n "$SUCCESS_ARTIFACT_GRACE_SEC" ]]; then
+    COMMON_ARGS+=(--success-artifact-grace-sec "$SUCCESS_ARTIFACT_GRACE_SEC")
 fi
 if [[ "$SKIP_AGENT" -eq 1 ]]; then
     COMMON_ARGS+=(--skip-agent)
