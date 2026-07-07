@@ -222,6 +222,7 @@ class Runner:
             raise SystemExit("required tool not on PATH: codex")
         last_message = Path(self.workspace, "artifacts", "codex-last-message.txt")
         args = ["codex", "exec", "--json"]
+        args.extend(["-c", 'shell_environment_policy.inherit="all"'])
         args.extend(["-C", self.workspace.as_posix()])
         args.extend(["-o", last_message.as_posix()])
         if self.model:
