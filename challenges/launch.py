@@ -383,6 +383,62 @@ class Runner:
         args.extend(inner_args)
         return args
 
+    def agent_container_runs_as_root(self) -> bool:
+        if not self.agent_container_image or not self.agent_container_user:
+            return False
+        user = str(self.agent_container_user)
+        return user in {"0", "root"} or user.startswith("0:") or user.startswith("root:")
+
+    def repair_container_file_ownership(self):
+        if not self.agent_container_runs_as_root() or shutil.which("docker") is None:
+            return
+
+        targets = [(self.workspace, "/ate-workspace")]
+        codex_home = Path.home() / ".codex"
+        if codex_home.exists():
+            targets.append((codex_home, "/ate-codex-home"))
+
+        args = ["docker", "run", "--rm"]
+        container_targets = []
+        for host_path, container_path in targets:
+            args.extend(["-v", f"{host_path}:{container_path}"])
+            container_targets.append(container_path)
+
+        uid = os.getuid()
+        gid = os.getgid()
+        command = "chown -hR %s:%s %s" % (
+            uid,
+            gid,
+            " ".join(shlex.quote(path) for path in container_targets),
+        )
+        started = time.monotonic()
+        try:
+            result = subprocess.run(
+                args + [self.agent_container_image, "bash", "-lc", command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+            metrics = {
+                "elapsed_sec": round(time.monotonic() - started, 3),
+                "returncode": result.returncode,
+                "targets": [path for _, path in targets],
+            }
+            if result.returncode:
+                metrics["stderr_tail"] = result.stderr[-1000:]
+            self.write_run_metrics({"container_ownership_repair": metrics})
+        except Exception as exc:
+            self.write_run_metrics(
+                {
+                    "container_ownership_repair": {
+                        "elapsed_sec": round(time.monotonic() - started, 3),
+                        "error": repr(exc),
+                        "targets": [path for _, path in targets],
+                    }
+                }
+            )
+
     def run_agent(self, args, attempt_started_monotonic: float, attempt_started_epoch: float):
         events = Path(self.workspace, "artifacts", "%s-events.jsonl" % self.agent)
         timed_events = Path(self.workspace, "artifacts", "%s-events-timed.jsonl" % self.agent)
@@ -656,7 +712,51 @@ class Runner:
         command_l = command.lower()
         if "install_te_pypi.sh" in command_l:
             return "megatron+te-install"
-        if "pip install" in command_l and (
+
+        inspect_markers = (
+            "rg ",
+            "sed ",
+            "cat ",
+            "git status",
+            "git log",
+            "uv --version",
+            "pip list",
+            "nvidia-smi",
+            "nvcc --version",
+            "ps ",
+            "du ",
+            "find ",
+        )
+        if any(marker in command_l for marker in inspect_markers):
+            return "inspect"
+
+        is_pip_install = "pip install" in command_l
+        if (
+            "install-smoke.log" in command_l
+            or "install smoke: ok" in command_l
+            or (
+                is_pip_install
+                and (
+                    "transformer_engine" in command_l
+                    or "transformer-engine" in command_l
+                    or " -e " in command_l
+                    or "megatron-core" in command_l
+                    or " .[" in command_l
+                    or " -e ." in command_l
+                )
+            )
+            or (
+                "python" in command_l
+                and (
+                    "import transformer_engine" in command_l
+                    or "from transformer_engine" in command_l
+                    or "import megatron.core" in command_l
+                )
+            )
+        ):
+            return "megatron+te-install"
+
+        if is_pip_install and (
             "torch==" in command_l
             or "--torch-backend" in command_l
             or "download.pytorch.org" in command_l
@@ -664,37 +764,7 @@ class Runner:
             return "torch-bootstrap"
         if "uv venv" in command_l or "python -m venv" in command_l:
             return "torch-bootstrap"
-        if (
-            "install-smoke.log" in command_l
-            or "install smoke: ok" in command_l
-            or "transformer_engine" in command_l
-            or "transformer-engine" in command_l
-            or "pip install" in command_l
-            and (
-                " -e " in command_l
-                or "megatron-core" in command_l
-                or "megatron-lm" in command_l
-                or " .[" in command_l
-                or " -e ." in command_l
-            )
-        ):
-            return "megatron+te-install"
-        if any(
-            marker in command_l
-            for marker in (
-                "rg ",
-                "sed ",
-                "cat ",
-                "git status",
-                "git log",
-                "uv --version",
-                "python",
-                "nvidia-smi",
-                "nvcc --version",
-                "ps ",
-                "du ",
-            )
-        ):
+        if "python" in command_l:
             return "inspect"
         return "other"
 
@@ -788,6 +858,7 @@ class Runner:
         try:
             self.attempt()
         finally:
+            self.repair_container_file_ownership()
             self.write_run_metrics(
                 {
                     "benchmark_finished_at": self.utc_now(),
