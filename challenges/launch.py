@@ -300,6 +300,7 @@ class Runner:
                     'prefix_rule(pattern=["rmdir"], decision="allow")',
                     'prefix_rule(pattern=["rg"], decision="allow")',
                     'prefix_rule(pattern=["sed"], decision="allow")',
+                    'prefix_rule(pattern=["sort"], decision="allow")',
                     'prefix_rule(pattern=["tail"], decision="allow")',
                     'prefix_rule(pattern=["tee"], decision="allow")',
                     'prefix_rule(pattern=["test"], decision="allow")',
