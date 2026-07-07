@@ -16,6 +16,7 @@ INSTALL_APEX=0
 SKIP_AGENT=0
 KEEP_WORKSPACE=0
 CODEX_BYPASS_APPROVALS=1
+CODEX_SANDBOX=workspace-write
 STOP_AFTER_SUCCESS_ARTIFACT=1
 
 usage() {
@@ -41,6 +42,7 @@ options:
   --install-apex        Install Apex during prepare; skipped by default
   --no-codex-bypass-approvals
                         Do not pass Codex's bypass flag; useful for managed accounts
+  --codex-sandbox MODE  Sandbox passed to Codex (default: workspace-write)
   --no-stop-after-success-artifact
                         Let the agent final-answer instead of stopping once smoke passes
   --skip-agent          Prepare/capture only; useful for harness validation
@@ -94,6 +96,10 @@ while [[ $# -gt 0 ]]; do
         --no-codex-bypass-approvals)
             CODEX_BYPASS_APPROVALS=0
             shift
+            ;;
+        --codex-sandbox)
+            CODEX_SANDBOX=$2
+            shift 2
             ;;
         --no-stop-after-success-artifact)
             STOP_AFTER_SUCCESS_ARTIFACT=0
@@ -158,6 +164,9 @@ if [[ -n "$COMMON_INSTRUCTION_PREFIX_FILE" ]]; then
 fi
 if [[ "$AGENT" == "codex" && "$CODEX_BYPASS_APPROVALS" -eq 0 ]]; then
     COMMON_ARGS+=(--no-codex-bypass-approvals)
+fi
+if [[ "$AGENT" == "codex" ]]; then
+    COMMON_ARGS+=(--codex-sandbox "$CODEX_SANDBOX")
 fi
 COMMON_ARGS+=(
     --success-artifact artifacts/install-smoke.log

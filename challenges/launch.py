@@ -42,6 +42,7 @@ class Runner:
         instruction_prefix_files: list[str],
         run_label: str | None,
         codex_bypass_approvals: bool,
+        codex_sandbox: str,
         agent_container_image: str | None,
         success_artifact: str | None,
         success_artifact_contains: str | None,
@@ -54,6 +55,7 @@ class Runner:
         self.instruction_prefix_files = instruction_prefix_files
         self.run_label = self.sanitize_run_label(run_label)
         self.codex_bypass_approvals = codex_bypass_approvals
+        self.codex_sandbox = codex_sandbox
         self.agent_container_image = agent_container_image
         self.success_artifact = success_artifact
         self.success_artifact_contains = success_artifact_contains
@@ -174,6 +176,7 @@ class Runner:
             "overlays": self.overlays,
             "instruction_prefix_files": self.instruction_prefix_files,
             "codex_bypass_approvals": self.codex_bypass_approvals,
+            "codex_sandbox": self.codex_sandbox,
             "agent_container_image": self.agent_container_image,
             "success_artifact": self.success_artifact,
             "success_artifact_contains": self.success_artifact_contains,
@@ -230,7 +233,7 @@ class Runner:
         last_message = Path(self.workspace, "artifacts", "codex-last-message.txt")
         args = ["codex", "exec", "--json"]
         args.extend(["-c", 'shell_environment_policy.inherit="all"'])
-        args.extend(["--sandbox", "workspace-write"])
+        args.extend(["--sandbox", self.codex_sandbox])
         args.extend(["-C", self.workspace.as_posix()])
         args.extend(["-o", last_message.as_posix()])
         if self.model:
@@ -239,7 +242,7 @@ class Runner:
         # permission-skipping behavior so environment setup and profiling tasks
         # can run without interactive approval prompts. Managed enterprise
         # Codex policies may disallow this flag; callers can opt out and rely
-        # on normal workspace-write plus local trust rules instead.
+        # on the configured sandbox plus local trust rules instead.
         if self.codex_bypass_approvals:
             args.append("--dangerously-bypass-approvals-and-sandbox")
         args.append(instruction)
@@ -734,6 +737,13 @@ if __name__ == "__main__":
         help="Run the agent inside this Docker image, mounting the ATE workspace and local Codex/uv tools.",
     )
     p.add_argument(
+        "--codex-sandbox",
+        type=str,
+        choices=["read-only", "workspace-write", "danger-full-access"],
+        default="workspace-write",
+        help="Sandbox mode passed to `codex exec`; use danger-full-access only inside an external sandbox.",
+    )
+    p.add_argument(
         "--success-artifact",
         type=str,
         default=None,
@@ -777,6 +787,7 @@ if __name__ == "__main__":
         a.instruction_prefix_file,
         a.run_label,
         a.codex_bypass_approvals,
+        a.codex_sandbox,
         a.agent_container_image,
         a.success_artifact,
         a.success_artifact_contains,
