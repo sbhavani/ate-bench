@@ -44,6 +44,7 @@ class Runner:
         codex_bypass_approvals: bool,
         codex_sandbox: str,
         agent_container_image: str | None,
+        agent_container_user: str | None,
         success_artifact: str | None,
         success_artifact_contains: str | None,
         stop_after_success_artifact: bool,
@@ -57,6 +58,7 @@ class Runner:
         self.codex_bypass_approvals = codex_bypass_approvals
         self.codex_sandbox = codex_sandbox
         self.agent_container_image = agent_container_image
+        self.agent_container_user = agent_container_user
         self.success_artifact = success_artifact
         self.success_artifact_contains = success_artifact_contains
         self.stop_after_success_artifact = stop_after_success_artifact
@@ -178,6 +180,7 @@ class Runner:
             "codex_bypass_approvals": self.codex_bypass_approvals,
             "codex_sandbox": self.codex_sandbox,
             "agent_container_image": self.agent_container_image,
+            "agent_container_user": self.agent_container_user,
             "success_artifact": self.success_artifact,
             "success_artifact_contains": self.success_artifact_contains,
             "stop_after_success_artifact": self.stop_after_success_artifact,
@@ -286,13 +289,13 @@ class Runner:
             "all",
             "--network",
             "host",
-            "--user",
-            "%s:%s" % (os.getuid(), os.getgid()),
             "-e",
             "HOME=%s" % home,
             "-e",
             "PATH=%s" % os.environ.get("PATH", ""),
         ]
+        if self.agent_container_user:
+            args.extend(["--user", self.agent_container_user])
         for name in env_names:
             if name in os.environ:
                 args.extend(["-e", "%s=%s" % (name, os.environ[name])])
@@ -306,8 +309,8 @@ class Runner:
             if path and path.exists():
                 args.extend(["-v", "%s:%s" % (path, path)])
         if policy_rule and policy_rule.exists():
-            container_rule = Path(home, ".codex", "rules", "ate-bench.rules")
-            args.extend(["-v", "%s:%s:ro" % (policy_rule, container_rule)])
+            container_rules = Path(home, ".codex", "rules")
+            args.extend(["-v", "%s:%s:ro" % (policy_rule.parent, container_rules)])
         args.extend(["-w", self.workspace.as_posix(), self.agent_container_image])
         args.extend(inner_args)
         return args
@@ -737,6 +740,12 @@ if __name__ == "__main__":
         help="Run the agent inside this Docker image, mounting the ATE workspace and local Codex/uv tools.",
     )
     p.add_argument(
+        "--agent-container-user",
+        type=str,
+        default="%s:%s" % (os.getuid(), os.getgid()),
+        help="User passed to Docker for the agent container; use `root` if nested sandbox namespaces fail.",
+    )
+    p.add_argument(
         "--codex-sandbox",
         type=str,
         choices=["read-only", "workspace-write", "danger-full-access"],
@@ -789,6 +798,7 @@ if __name__ == "__main__":
         a.codex_bypass_approvals,
         a.codex_sandbox,
         a.agent_container_image,
+        a.agent_container_user,
         a.success_artifact,
         a.success_artifact_contains,
         a.stop_after_success_artifact,
