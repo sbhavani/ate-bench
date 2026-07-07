@@ -263,10 +263,13 @@ class Runner:
         policy_rule.write_text(
             "\n".join(
                 [
+                    'prefix_rule(pattern=["/usr/bin/bash"], decision="allow")',
                     'prefix_rule(pattern=["/usr/bin/bash", "-c"], decision="allow")',
                     'prefix_rule(pattern=["/usr/bin/bash", "-lc"], decision="allow")',
+                    'prefix_rule(pattern=["/bin/bash"], decision="allow")',
                     'prefix_rule(pattern=["/bin/bash", "-c"], decision="allow")',
                     'prefix_rule(pattern=["/bin/bash", "-lc"], decision="allow")',
+                    'prefix_rule(pattern=["bash"], decision="allow")',
                     'prefix_rule(pattern=["bash", "-c"], decision="allow")',
                     'prefix_rule(pattern=["bash", "-lc"], decision="allow")',
                     "",
