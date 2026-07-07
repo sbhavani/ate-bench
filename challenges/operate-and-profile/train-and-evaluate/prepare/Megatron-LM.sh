@@ -51,12 +51,18 @@ build_environment()
     export CPATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","include"))))')${CPATH:+:$CPATH}"
     export LIBRARY_PATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","lib"))))')${LIBRARY_PATH:+:$LIBRARY_PATH}"
     # Keep prepare on the MCore/TE path; dev pulls unrelated native kernels.
+    TRANSFORMER_ENGINE_SPEC=${ATE_TRANSFORMER_ENGINE_SPEC:-"transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@5671fd3675906cda1ade26c24a65d3dedd88eb89"}
+    RUNTIME_DEPS=(
+        "$TRANSFORMER_ENGINE_SPEC"
+        flask-restful sentencepiece tiktoken wandb transformers accelerate omegaconf
+        datasets tensorboard rich six hydra-core tqdm
+        "einops~=0.8" "tensorstore~=0.1,!=0.1.46,!=0.1.72" "nvtx~=0.2" "nv-grouped-gemm~=1.1"
+    )
     MAX_JOBS="${ATE_MAX_JOBS:-4}" NVTE_BUILD_THREADS_PER_JOB="${ATE_NVTE_BUILD_THREADS_PER_JOB:-1}" NVTE_FRAMEWORK=pytorch \
-        uv pip install --python .venv/bin/python --no-config --no-build-isolation -e ".[training,te]"
+        uv pip install --python .venv/bin/python --no-config --no-build-isolation -e "." "${RUNTIME_DEPS[@]}"
     if [[ "${ATE_INSTALL_APEX:-0}" == "1" ]]; then
         uv pip install --python .venv/bin/python --no-config --no-build-isolation -C="--build-option=--cpp_ext" -C="--build-option=--cuda_ext" "apex @ git+https://github.com/NVIDIA/apex.git"
     fi
-    uv pip install --python .venv/bin/python --no-config accelerate omegaconf hydra-core datasets tensorboard rich six
     popd
 
     pushd lm-evaluation-harness

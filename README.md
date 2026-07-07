@@ -61,8 +61,8 @@ venv is discarded before the agent runs and the Megatron Core/TE challenge path
 does not need Apex; pass `--install-apex` only when intentionally testing that
 legacy dependency path. The bundled Megatron challenge patches disable
 gradient-accumulation fusion so this no-Apex path remains valid. Megatron
-prepare scripts also avoid the broad `dev` extra and install only
-`.[training,te]` plus explicit data/conversion helpers, so unrelated SSM kernels
+prepare scripts also avoid the broad `dev` extra and install Megatron, TE, and
+curated runtime/data/conversion helpers explicitly, so unrelated SSM kernels
 such as Mamba and causal-conv1d are not built for non-SSM challenges.
 
 ```bash
