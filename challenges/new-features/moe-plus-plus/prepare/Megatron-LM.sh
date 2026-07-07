@@ -18,10 +18,10 @@ setup_codebase()
 build_environment()
 {
     pushd Megatron-LM
-    export NVTE_CUDA_ARCHS="90;100"
-    export TORCH_CUDA_ARCH_LIST="9.0 10.0"
+    export NVTE_CUDA_ARCHS="${ATE_NVTE_CUDA_ARCHS:-90;100}"
+    export TORCH_CUDA_ARCH_LIST="${ATE_TORCH_CUDA_ARCH_LIST:-9.0 10.0}"
     uv sync --only-group build
-    uv pip install --python .venv/bin/python --no-config "torch>=2.10.0" --torch-backend=cu130
+    uv pip install --python .venv/bin/python --no-config "torch>=2.10.0" --torch-backend="${ATE_TORCH_BACKEND:-cu130}"
     uv pip install --python .venv/bin/python --no-config cmake ninja zstandard
     export CPATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","include"))))')${CPATH:+:$CPATH}"
     export LIBRARY_PATH="$(.venv/bin/python -c 'import nvidia,glob,os;b=nvidia.__path__[0];print(os.pathsep.join(glob.glob(os.path.join(b,"*","lib"))))')${LIBRARY_PATH:+:$LIBRARY_PATH}"

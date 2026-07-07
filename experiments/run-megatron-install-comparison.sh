@@ -7,6 +7,9 @@ CHALLENGE=challenges/operate-and-profile/getting-started
 AGENT=codex
 MODEL=
 OVERLAY_ROOT=
+TORCH_BACKEND=
+NVTE_CUDA_ARCHS=
+TORCH_CUDA_ARCH_LIST=
 SKIP_AGENT=0
 KEEP_WORKSPACE=0
 
@@ -23,6 +26,9 @@ options:
   --challenge PATH      Challenge directory (default: operate-and-profile/getting-started)
   --agent NAME          Agent backend (default: codex)
   --model NAME          Agent model override
+  --torch-backend NAME  Override ATE_TORCH_BACKEND for CUDA host compatibility
+  --nvte-cuda-archs X   Override ATE_NVTE_CUDA_ARCHS, e.g. 90
+  --torch-cuda-arch X   Override ATE_TORCH_CUDA_ARCH_LIST, e.g. 9.0
   --skip-agent          Prepare/capture only; useful for harness validation
   --keep-workspace      Keep prepared workspace directories
   -h, --help            Show this help
@@ -45,6 +51,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --model)
             MODEL=$2
+            shift 2
+            ;;
+        --torch-backend)
+            TORCH_BACKEND=$2
+            shift 2
+            ;;
+        --nvte-cuda-archs)
+            NVTE_CUDA_ARCHS=$2
+            shift 2
+            ;;
+        --torch-cuda-arch)
+            TORCH_CUDA_ARCH_LIST=$2
             shift 2
             ;;
         --skip-agent)
@@ -81,6 +99,16 @@ fi
 if [[ ! -d "$OVERLAY_ROOT/skills" ]]; then
     echo "overlay root is missing skills/: $OVERLAY_ROOT" >&2
     exit 1
+fi
+
+if [[ -n "$TORCH_BACKEND" ]]; then
+    export ATE_TORCH_BACKEND=$TORCH_BACKEND
+fi
+if [[ -n "$NVTE_CUDA_ARCHS" ]]; then
+    export ATE_NVTE_CUDA_ARCHS=$NVTE_CUDA_ARCHS
+fi
+if [[ -n "$TORCH_CUDA_ARCH_LIST" ]]; then
+    export ATE_TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST
 fi
 
 COMMON_ARGS=(Megatron-LM "$CHALLENGE" --agent "$AGENT")

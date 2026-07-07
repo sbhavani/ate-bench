@@ -64,6 +64,18 @@ experiments/run-megatron-install-comparison.sh \
   --keep-workspace
 ```
 
+On CUDA 12.8 SM90 hosts, keep the benchmark's default CUDA 13 path intact but
+run the comparison with matching prepare-time overrides:
+
+```bash
+experiments/run-megatron-install-comparison.sh \
+  --overlay-root /path/to/Megatron-LM \
+  --torch-backend cu128 \
+  --nvte-cuda-archs 90 \
+  --torch-cuda-arch 9.0 \
+  --keep-workspace
+```
+
 Codex attempt summaries can be generated from snapshots with:
 
 ```bash
