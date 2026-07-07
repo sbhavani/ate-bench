@@ -1,5 +1,7 @@
 import argparse
+import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -35,15 +37,21 @@ class Runner:
         model: str | None,
         overlays: list[str],
         instruction_prefix_file: str | None,
+        run_label: str | None,
         skip_agent: bool,
         keep_workspace: bool,
     ):
         self.framework, self.challenge, self.agent, self.model = framework, challenge, agent, model
         self.overlays = overlays
         self.instruction_prefix_file = instruction_prefix_file
+        self.run_label = self.sanitize_run_label(run_label)
         self.skip_agent = skip_agent
         self.keep_workspace = keep_workspace
-        self.uuid = "-".join([framework, secrets.token_hex(3)])
+        uuid_parts = [framework]
+        if self.run_label:
+            uuid_parts.append(self.run_label)
+        uuid_parts.append(secrets.token_hex(3))
+        self.uuid = "-".join(uuid_parts)
         self.workspace = Path(WORKSPACE, challenge, self.uuid)
         self.workspace.mkdir(parents=True, exist_ok=False)
 
@@ -76,6 +84,15 @@ class Runner:
         return Path(source).expanduser().resolve(), destination
 
     @staticmethod
+    def sanitize_run_label(run_label: str | None):
+        if not run_label:
+            return None
+        cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_label.strip()).strip("-")
+        if not cleaned:
+            raise ValueError("run label must contain at least one alphanumeric, dot, underscore, or dash")
+        return cleaned
+
+    @staticmethod
     def overlay_ignore(directory, names):
         ignored = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
         if Path(directory).name == "Megatron-LM":
@@ -89,6 +106,17 @@ class Runner:
         if self.instruction_prefix_file:
             prefix = Path(self.instruction_prefix_file).read_text()
             instruction = prefix.rstrip() + "\n\n" + instruction
+        metadata = {
+            "framework": self.framework,
+            "challenge": self.challenge,
+            "agent": self.agent,
+            "model": self.model,
+            "run_label": self.run_label,
+            "overlays": self.overlays,
+            "instruction_prefix_file": self.instruction_prefix_file,
+            "workspace": self.workspace.as_posix(),
+        }
+        Path(self.workspace, "artifacts", "run-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
         Path(self.workspace, "artifacts", "%s-instruction.md" % self.agent).write_text(instruction)
         if self.agent == "claude":
             args = self.claude_args(instruction)
@@ -207,6 +235,7 @@ if __name__ == "__main__":
         default=None,
         help="Prepend this file's contents to the challenge instruction before running the agent.",
     )
+    p.add_argument("--run-label", type=str, default=None, help="Label this run in the workspace/snapshot id")
     p.add_argument("--skip-agent", action="store_true", help="Prepare, overlay, and capture without invoking the agent")
     p.add_argument("--keep-workspace", action="store_true", help="Do not delete the prepared workspace after capture")
     a = p.parse_args()
@@ -217,6 +246,7 @@ if __name__ == "__main__":
         a.model,
         a.overlay,
         a.instruction_prefix_file,
+        a.run_label,
         a.skip_agent,
         a.keep_workspace,
     ).launch()

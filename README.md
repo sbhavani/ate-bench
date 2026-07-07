@@ -54,6 +54,23 @@ python3 challenges/launch.py Megatron-LM challenges/operate-and-profile/getting-
 Use `--skip-agent --keep-workspace` to validate preparation, overlays, and the
 generated agent command without spending on a full agent attempt.
 
+For the Megatron-LM bare-metal install comparison, the paired helper runs the
+same challenge once without skills and once with the Megatron install-skill
+overlay:
+
+```bash
+experiments/run-megatron-install-comparison.sh \
+  --overlay-root /path/to/Megatron-LM \
+  --keep-workspace
+```
+
+Codex attempt summaries can be generated from snapshots with:
+
+```bash
+python3 experiments/summarize_codex_events.py \
+  snapshots/challenges/operate-and-profile/getting-started
+```
+
 Each run clones the framework at its pinned commit into a throwaway sandbox under `workspace/`, runs the agent, and writes the record (patches, artifacts, session transcript) to `snapshots/<challenge>/<uuid>/`. The challenge categories under `challenges/` are `question-and-answer/` (read-only codebase Q&A), `operate-and-profile/` (run, instrument, and profile a workflow), and `new-features/` (integrate a new architecture).
 
 We recommend pointing `workspace/` at a locally-mounted disk rather than NFS. For full isolation, every task installs its own environment and clones the framework from scratch, so this directory takes heavy, repeated I/O — and local disks are much faster than NFS for it. Only the small, permanent records under `snapshots/` need to live on shared storage. You may additionally set `ANTHROPIC_API_KEY` to authenticate the agent.
